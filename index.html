@@ -1670,6 +1670,33 @@ button[style*="width:22px"],button[style*="width:26px"],button[style*="width:28p
 :focus-visible{outline:2.5px solid var(--green);outline-offset:2px;border-radius:var(--r-xs)}
 button:focus-visible,[role="button"]:focus-visible,[tabindex]:focus-visible{outline:2.5px solid var(--green);outline-offset:3px}
 :focus:not(:focus-visible){outline:none}
+
+/* ── MEJORA UX: feedback táctil consistente ──────────────────────
+   Da respuesta al tacto en elementos interactivos que no la tenían
+   (botones de acción del inicio, tarjetas de ajustes) y suaviza los
+   botones de acción de las hojas. Escala mínima = sensación premium
+   sin resultar exagerada. */
+.dash-action,.set-card{transition:transform .12s ease, box-shadow .15s ease, background .15s ease;}
+.dash-action:active{transform:scale(.96);}
+.set-card:active{transform:scale(.985);}
+.sbtn{transition:transform .12s ease, filter .15s ease, background .15s ease;}
+.sbtn:active{transform:scale(.97);}
+
+/* Entrada más suave de las hojas/modales (sin cambiar su lógica) */
+@keyframes ccSheetIn{from{transform:translateY(14px);opacity:.4}to{transform:translateY(0);opacity:1}}
+.ovl .sheet{animation:ccSheetIn .22s cubic-bezier(.22,.61,.36,1);}
+
+/* ── ACCESIBILIDAD: respetar "reducir movimiento" ────────────────
+   Si el usuario del sistema pide menos animación, la desactivamos.
+   Es buena práctica y evita mareos a personas sensibles. */
+@media (prefers-reduced-motion: reduce){
+  *,*::before,*::after{
+    animation-duration:.001ms !important;
+    animation-iteration-count:1 !important;
+    transition-duration:.001ms !important;
+    scroll-behavior:auto !important;
+  }
+}
 </style>
 <script>
 /* Restore MC theme before first paint */
@@ -2919,13 +2946,13 @@ function initFirebase(){
     // Contar sesiones consecutivas con fallo de websocket
     try{
       var failureCount=parseInt(localStorage.getItem('mdc_fb_ws_failures')||'0',10)||0;
-      console.log('[Firebase] Sesiones previas con fallo websocket:',failureCount);
+      dlog('[Firebase] Sesiones previas con fallo websocket:',failureCount);
       // Si llevamos 2+ sesiones fallando, forzar long-polling explícitamente
       if(failureCount>=2){
         try{
           if(firebase.database && firebase.database.INTERNAL && firebase.database.INTERNAL.forceLongPolling){
             firebase.database.INTERNAL.forceLongPolling();
-            console.log('[Firebase] forzando long-polling tras',failureCount,'fallos');
+            dlog('[Firebase] forzando long-polling tras',failureCount,'fallos');
           }
         }catch(e){console.warn('No se pudo forzar long-polling:',e);}
       }
@@ -2964,7 +2991,7 @@ function initFirebase(){
     var _reconnectAttempts=0; // Cuántas veces hemos intentado reconectar
     fbDB.ref('.info/connected').on('value',function(snap){
       var connected=(snap.val()===true);
-      console.log('[FB.connected]', connected, '(',new Date().toISOString(),')');
+      dlog('[FB.connected]', connected, '(',new Date().toISOString(),')');
       if(connected){
         _connSeenTrue=true;
         _reconnectAttempts=0;
@@ -2988,7 +3015,7 @@ function initFirebase(){
       // siempre dispara false primero mientras conecta.
       var elapsedSinceInit=Date.now()-_initStartedAt;
       if(!_connSeenTrue && elapsedSinceInit<_initialGraceMs){
-        console.log('[FB.connected] false durante grace period — esperando…');
+        dlog('[FB.connected] false durante grace period — esperando…');
         return;
       }
       // Pasada la gracia, marcar como offline
@@ -3001,7 +3028,7 @@ function initFirebase(){
           var fc=parseInt(localStorage.getItem(failKey)||'0',10)||0;
           if(fc<10){ // no incrementar infinitamente
             localStorage.setItem(failKey,String(fc+1));
-            console.log('[FB] Sesión fallida — contador:',fc+1);
+            dlog('[FB] Sesión fallida — contador:',fc+1);
           }
         }catch(e){}
       }
@@ -3015,7 +3042,7 @@ function initFirebase(){
         console.warn('[FB] Auto-reconexión #'+_reconnectAttempts+' (offline >'+Math.round(backoff/1000)+'s)');
         // 1) Refresh token
         fbAuth.currentUser.getIdToken(true).then(function(){
-          console.log('[FB] token refrescado, ciclando conexión…');
+          dlog('[FB] token refrescado, ciclando conexión…');
           // 2) Ciclar conexión
           try{fbDB.goOffline();}catch(e){}
           setTimeout(function(){
@@ -3106,7 +3133,7 @@ function showApp(user){
             // luego trae más datos, se aplicarán; si trae menos, las guardias bloquearán
             // la regresión.
             _initialLoadComplete = true;
-            console.log('[Startup] Datos locales cargados para uid='+user.uid.slice(0,8)+
+            dlog('[Startup] Datos locales cargados para uid='+user.uid.slice(0,8)+
               ', ventas='+(pSedeCC.ventas||[]).length+
               ', clientes='+(pSedeCC.clients||[]).length+
               ' — _initialLoadComplete=TRUE (Firebase cargará en background)');
@@ -3160,7 +3187,7 @@ function loadUserData(user){
     var localVentas = (data.sedes.cc.ventas||[]).length;
     var localClients = (data.sedes.cc.clients||[]).length;
     if(localVentas > 0 || localClients > 0){
-      console.log('[loadUserData] Mostrando UI YA con datos locales ('+localVentas+' ventas, '+localClients+' clientes). Firebase cargará en background.');
+      dlog('[loadUserData] Mostrando UI YA con datos locales ('+localVentas+' ventas, '+localClients+' clientes). Firebase cargará en background.');
       // Asegurar todos los campos
       ['cc'].forEach(function(sid){
         var s=data.sedes[sid];if(!s)return;
@@ -3199,7 +3226,7 @@ function loadUserDataFromFirebase(user, isBackgroundRefresh){
   var loadSettled=false;
   function handleResult(d, via){
     if(loadSettled)return;loadSettled=true;
-    console.log('[loadUserData] resuelto vía',via);
+    dlog('[loadUserData] resuelto vía',via);
     processLoadedData(d);
   }
   function processLoadedData(d){
@@ -3564,8 +3591,8 @@ function diagnoseFBData(){
       };
       pending--;
       if(pending===0){
-        console.log('=== FIREBASE DIAGNOSTIC ===');
-        console.log(JSON.stringify(results,null,2));
+        dlog('=== FIREBASE DIAGNOSTIC ===');
+        dlog(JSON.stringify(results,null,2));
         var msg='UID: '+uid+'\n';
         Object.keys(results.paths).forEach(function(p){
           var r=results.paths[p];
@@ -4547,7 +4574,7 @@ function fbSave(){
     var saveSettled=false;
     function onSaveOK(via){
       if(saveSettled)return;saveSettled=true;
-      console.log('[fbSave] OK vía',via);
+      dlog('[fbSave] OK vía',via);
       clearTimeout(_watchdog);
       fbSyncing = false;
       _pendingFbSave=false;
@@ -4748,7 +4775,7 @@ function diagnoseFirebase(){
         }
       }
       keysToClear.forEach(function(k){localStorage.removeItem(k);});
-      console.log('[FB diag] Cleared',keysToClear.length,'Firebase-related localStorage keys');
+      dlog('[FB diag] Cleared',keysToClear.length,'Firebase-related localStorage keys');
     }catch(e){}
     setTimeout(function(){window.location.reload();},400);
   };
@@ -9060,7 +9087,15 @@ function rescheduleAllReminders(){
   }
 }
 
-function deleteReminder(){data.reminders=[];save();fbSave();renderReminders();}
+function deleteReminder(){
+  // FIX UX: "Borrar todo" eliminaba TODOS los recordatorios sin confirmación.
+  var n=(data.reminders||[]).length;
+  if(!n){showToast('No hay recordatorios que borrar');return;}
+  mdcConfirm('\u00bfBorrar <strong>'+n+' recordatorio'+(n!==1?'s':'')+'</strong>?<br><span style="font-size:11px;color:var(--text3)">Esta acci\u00f3n no se puede deshacer.</span>','Borrar recordatorios','S\u00ed, borrar todo',function(){
+    data.reminders=[];save();fbSave();renderReminders();
+    showToast('\ud83d\uddd1\ufe0f Recordatorios borrados');
+  });
+}
 
 /* [SEC-21] ═══ PRODUCT MODAL (STOCK) ═══ */
 function openProdModal(id,preserveData){
@@ -12514,7 +12549,7 @@ function _processReferralPattern(newClient, onDone){
   var pattern = _detectReferralPattern(newClient.name);
   if(!pattern){done();return false;}
 
-  console.log('[Referidos] Detectado patrón "'+newClient.name+'" → referido por "'+pattern.referrerName+'"');
+  dlog('[Referidos] Detectado patrón "'+newClient.name+'" → referido por "'+pattern.referrerName+'"');
 
   var candidates = _findReferrerCandidates(pattern.referrerName);
 
@@ -12777,7 +12812,7 @@ function _showRefScanSummaryModal(autoLinked, pendingReview){
       try{if(typeof renderClientes==='function')renderClientes();}catch(e){}
       return;
     }
-    console.log('[RefScan] Iniciando revisión de', todoQueue.length, 'clientas');
+    dlog('[RefScan] Iniciando revisión de', todoQueue.length, 'clientas');
     _processReferralsSequential(todoQueue, 0);
   });
   m.querySelector('#scanLater').addEventListener('click', function(){
@@ -12794,10 +12829,10 @@ function _showRefScanSummaryModal(autoLinked, pendingReview){
    FIX adicional: logging + skip detection para que no desaparezca silenciosamente. */
 function _processReferralsSequential(queue, idx){
   idx = idx || 0;
-  console.log('[RefSeq] paso', idx, 'de', queue ? queue.length : 0);
+  dlog('[RefSeq] paso', idx, 'de', queue ? queue.length : 0);
   
   if(!queue || idx >= queue.length){
-    console.log('[RefSeq] completado');
+    dlog('[RefSeq] completado');
     try{localStorage.setItem('mdc_refScan_v1_done','1');}catch(e){}
     showToast('✓ Revisión de referidos completada', 4000);
     try{if(typeof renderClientes==='function')renderClientes();}catch(e){}
@@ -12809,26 +12844,26 @@ function _processReferralsSequential(queue, idx){
     return _processReferralsSequential(queue, idx+1);
   }
   
-  console.log('[RefSeq] procesando:', item.client.name, '— ya tiene referidoPor:', !!item.client.referidoPor);
+  dlog('[RefSeq] procesando:', item.client.name, '— ya tiene referidoPor:', !!item.client.referidoPor);
   
   // Si la clienta YA tiene referente (asignado por otro flujo), saltar al siguiente
   // sin contar como "procesada con éxito" — no es un error
   if(item.client.referidoPor){
-    console.log('[RefSeq] saltando (ya tiene referente)');
+    dlog('[RefSeq] saltando (ya tiene referente)');
     return setTimeout(function(){_processReferralsSequential(queue, idx+1);}, 100);
   }
   
   // Re-detectar patrón por si cambió el nombre
   var pat = _detectReferralPattern(item.client.name||'');
   if(!pat){
-    console.log('[RefSeq] saltando (sin patrón Ref)');
+    dlog('[RefSeq] saltando (sin patrón Ref)');
     return setTimeout(function(){_processReferralsSequential(queue, idx+1);}, 100);
   }
   
   // Mostrar el modal apropiado directamente — NO pasar por _processReferralPattern
   // que tiene atajos que pueden cerrar sin mostrar nada.
   var candidates = _findReferrerCandidates(pat.referrerName);
-  console.log('[RefSeq]', pat.referrerName, '→', candidates.length, 'candidatos');
+  dlog('[RefSeq]', pat.referrerName, '→', candidates.length, 'candidatos');
   
   var nextStep = function(){
     setTimeout(function(){_processReferralsSequential(queue, idx+1);}, 400);
@@ -13972,7 +14007,7 @@ function publishClientProgress(clientId){
   // Estrategia race REST + SDK
   return new Promise(function(resolve,reject){
     var done=false;
-    function ok(via){if(done)return;done=true;console.log('[publishProgress] ✓ vía',via);resolve(c.progressToken);}
+    function ok(via){if(done)return;done=true;dlog('[publishProgress] ✓ vía',via);resolve(c.progressToken);}
     function fail(err){if(done)return;done=true;console.error('[publishProgress] ✗',err);reject(err);}
     try{
       fbRestSet(path, payload).then(function(){ok('REST');}).catch(function(eRest){
@@ -14461,7 +14496,7 @@ function reconnectFbListener(){
 ═══════════════════════════════════════════════════════════════ */
 function _runWeeklyAutoBackup(){
   if(!fbAuth || !fbAuth.currentUser){
-    console.log('[AutoBackup] no auth, omitiendo');
+    dlog('[AutoBackup] no auth, omitiendo');
     return;
   }
   var lastAuto = 0;
@@ -14470,7 +14505,7 @@ function _runWeeklyAutoBackup(){
   var sevenDaysMs = 7 * 86400000;
 
   if(lastAuto && (now - lastAuto) < sevenDaysMs){
-    console.log('[AutoBackup] saltado, último hace', Math.round((now-lastAuto)/86400000), 'días');
+    dlog('[AutoBackup] saltado, último hace', Math.round((now-lastAuto)/86400000), 'días');
     return;
   }
 
@@ -14508,7 +14543,7 @@ function _runWeeklyAutoBackup(){
     console.warn('[AutoBackup] payload demasiado grande:', sizeKB, 'KB. Omitiendo.');
     return;
   }
-  console.log('[AutoBackup] payload size:', sizeKB, 'KB');
+  dlog('[AutoBackup] payload size:', sizeKB, 'KB');
   
   var payload = {
     timestamp: now,
@@ -14520,7 +14555,7 @@ function _runWeeklyAutoBackup(){
 
   var uid_ = fbAuth.currentUser.uid;
   var path = 'centrocuidate/users/' + uid_ + '/backups/weekly';
-  console.log('[AutoBackup] subiendo...', path);
+  dlog('[AutoBackup] subiendo...', path);
 
   // SDK + REST en paralelo
   var written = false;
@@ -14528,7 +14563,7 @@ function _runWeeklyAutoBackup(){
     if(written)return;
     written = true;
     try{localStorage.setItem('mdc_lastAutoBackup', String(now));}catch(e){}
-    console.log('[AutoBackup] ✓ guardado vía', via);
+    dlog('[AutoBackup] ✓ guardado vía', via);
   }
   try{
     fbDB.ref(path).set(payload).then(function(){onSuccess('SDK');}).catch(function(){});
@@ -14663,7 +14698,7 @@ function _backupBeforeRestore(cb){
   var path = 'centrocuidate/users/' + uid_ + '/backups/before-restore';
   if(typeof fbRestSet==='function'){
     fbRestSet(path, payload).then(function(){
-      console.log('[BackupBeforeRestore] ✓ guardado');
+      dlog('[BackupBeforeRestore] ✓ guardado');
       cb && cb();
     }).catch(function(e){
       console.warn('[BackupBeforeRestore] falló:',e);
@@ -18208,7 +18243,7 @@ var _pendingBookingCount=0; // expuesto para mostrar en accesos rápidos del das
 function startBookingListener(){
   if(!fbDB||!fbAuth||!fbAuth.currentUser||_bookingListener)return;
   _bookingListener=true;
-  console.log('[BookingListener] Iniciando...');
+  dlog('[BookingListener] Iniciando...');
 
   // ESTRATEGIA INFALIBLE:
   // 1) Listener SDK websocket — tiempo real cuando funciona
@@ -18224,7 +18259,7 @@ function startBookingListener(){
       var pending=Object.values(reqs).filter(function(r){return r.status==='pending';});
       var prevCount = _pendingBookingCount;
       _pendingBookingCount = pending.length;
-      console.log('[BookingListener]',source,'→',pending.length,'pendientes');
+      dlog('[BookingListener]',source,'→',pending.length,'pendientes');
 
       // BUG #6 FIX: usar localStorage para no duplicar notificaciones tras recarga
       var notifiedKey='mdc_notified_bookings';
@@ -18308,7 +18343,7 @@ function startBookingListener(){
 /* Notificar al admin de una nueva solicitud (toast + sonido + vibración + push) */
 function notifyNewBookingRequest(req){
   if(!req)return;
-  console.log('[BookingListener] 🔔 Nueva solicitud:', req.clientName);
+  dlog('[BookingListener] 🔔 Nueva solicitud:', req.clientName);
 
   // 1) Vibración (móvil)
   try{
@@ -18486,7 +18521,7 @@ function loadWorkshops(){
     if(el)el.innerHTML='<div style="text-align:center;padding:24px;color:var(--text3);font-size:13px">Necesitas conexión para gestionar talleres.</div>';
     return;
   }
-  console.log('[loadWorkshops] iniciando carga…');
+  dlog('[loadWorkshops] iniciando carga…');
 
   // PASO 0: cargar respaldo localStorage al instante (mientras llega Firebase)
   // Esto evita pantallas vacías si Firebase tarda en responder.
@@ -18494,7 +18529,7 @@ function loadWorkshops(){
     var lsBackup=JSON.parse(localStorage.getItem('mdc_workshops_backup')||'{}');
     if(Object.keys(lsBackup).length>0){
       _workshopsCache=lsBackup;
-      console.log('[loadWorkshops] preload local:',Object.keys(lsBackup).length,'talleres');
+      dlog('[loadWorkshops] preload local:',Object.keys(lsBackup).length,'talleres');
       renderWorkshopsList();
     }
   }catch(e){}
@@ -18504,7 +18539,7 @@ function loadWorkshops(){
   function onResult(val, source){
     if(settled)return;settled=true;
     val=val||{};
-    console.log('[loadWorkshops] ✓ vía',source,':',Object.keys(val).length,'talleres');
+    dlog('[loadWorkshops] ✓ vía',source,':',Object.keys(val).length,'talleres');
     _workshopsCache=val;
     // Sincronizar el respaldo local con lo que tiene Firebase
     try{localStorage.setItem('mdc_workshops_backup', JSON.stringify(val));}catch(e){}
@@ -18691,7 +18726,7 @@ function openWorkshopEdit(workshopId){
 }
 
 function saveWorkshop(workshopId){
-  console.log('[saveWorkshop] llamado con id=', workshopId);
+  dlog('[saveWorkshop] llamado con id=', workshopId);
   var dateEl=document.getElementById('wsEditDate');
   var timeEl=document.getElementById('wsEditTime');
   var durEl=document.getElementById('wsEditDur');
@@ -18741,7 +18776,7 @@ function saveWorkshop(workshopId){
   if(existing.attendees&&Object.keys(existing.attendees).length>0){
     workshop.attendees=existing.attendees;
   }
-  console.log('[saveWorkshop] guardando taller:', id, workshop);
+  dlog('[saveWorkshop] guardando taller:', id, workshop);
 
   // ─── OPTIMISTIC UI ─────────────────────────────────────────
   // Cerramos modal y mostramos el taller en la lista AL INSTANTE.
@@ -18765,7 +18800,7 @@ function saveWorkshop(workshopId){
   function onResult(ok, source, err){
     if(saved)return;saved=true;
     if(ok){
-      console.log('[saveWorkshop] ✓ guardado vía',source);
+      dlog('[saveWorkshop] ✓ guardado vía',source);
       showToast(workshopId?'✓ Taller actualizado':'✓ Taller programado',2500);
       try{if(typeof haptic==='function')haptic('confirm');}catch(e){}
       if(document.getElementById('workshopsList'))renderWorkshopsList();
@@ -19009,7 +19044,7 @@ async function loadBookingRequests(){
   function handleResult(reqs, source){
     if(settled) return;
     settled = true;
-    console.log('[loadBookingRequests] ✓ vía', source);
+    dlog('[loadBookingRequests] ✓ vía', source);
     var all=[];
     Object.values(reqs||{}).forEach(function(r){
       all.push(Object.assign({},r,{_sid:'cc'}));
@@ -19320,7 +19355,7 @@ function approveBooking(reqId,sid,requestData){
     var loaded=false;
     function onLoad(r,source){
       if(loaded)return;loaded=true;
-      console.log('[approveBooking] solicitud cargada vía',source);
+      dlog('[approveBooking] solicitud cargada vía',source);
       processRequest(r);
     }
     try{
@@ -19346,18 +19381,18 @@ function approveBooking(reqId,sid,requestData){
 function _markBookingStatus(sid, reqId, status){
   var path = getBookingPath(sid)+'/requests/'+reqId;
   var statusPath = path+'/status';
-  console.log('[_markBookingStatus]', statusPath, '→', status);
+  dlog('[_markBookingStatus]', statusPath, '→', status);
 
   // Paso 1: marcar el status (por si alguien lo lee antes del delete)
   // Vía SDK (puede fallar si websocket roto)
   try{
     fbDB.ref(statusPath).set(status).then(function(){
-      console.log('[_markBookingStatus] ✓ status set vía SDK');
+      dlog('[_markBookingStatus] ✓ status set vía SDK');
     }).catch(function(){});
   }catch(e){}
   // Vía REST (respaldo)
   fbRestSet(statusPath, status).then(function(){
-    console.log('[_markBookingStatus] ✓ status set vía REST');
+    dlog('[_markBookingStatus] ✓ status set vía REST');
   }).catch(function(e){
     var msg=(e&&e.message)||String(e);
     if(/permission|401|403/i.test(msg)){
@@ -19368,7 +19403,7 @@ function _markBookingStatus(sid, reqId, status){
   // MEJORA G: Paso 2 — tras un breve gracia, BORRAR la solicitud entera
   // de Firebase. Así no se acumula histórico y la lista queda limpia.
   setTimeout(function(){
-    console.log('[_markBookingStatus] borrando solicitud completa:', path);
+    dlog('[_markBookingStatus] borrando solicitud completa:', path);
     // Vía SDK + REST en paralelo (uno funcionará seguro)
     try{ fbDB.ref(path).remove().catch(function(){}); }catch(e){}
     if(typeof fbRestDelete === 'function'){

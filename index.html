@@ -6952,6 +6952,8 @@ function confirmAddToCart(pid,costPrice,isService){
   var rawVal=((priceEl||{}).value||'').replace(',','.');
   var sp=parseFloat(rawVal)||0;
   if(!sp&&!isService){if(priceEl)priceEl.focus();showToast('Introduce el precio de venta');return;}
+  // FIX: rechazar precios negativos (antes se aceptaba un precio como -5 €)
+  if(sp<0){if(priceEl)priceEl.focus();showToast('\u26a0\uFE0F El precio no puede ser negativo');return;}
   var qty=_priceModalQty||1;
   var p=null;for(var i=0;i<data.products.length;i++)if(data.products[i].id===pid){p=data.products[i];break;}
   if(!p)return;
@@ -7155,6 +7157,8 @@ function confirmSvcProducts(pid,sellPrice,qty,baseCost){
 }
 
 function _addServiceToCart(p,sp,qty,baseCost,productCost,linkedProducts){
+  // FIX: rechazar precios negativos también en servicios
+  if(sp<0){showToast('\u26a0\uFE0F El precio no puede ser negativo');return;}
   // Total cost = base service cost + linked product costs
   var totalCost=baseCost+productCost;
   cart=cart.filter(function(c){return c.productId!==p.id;});
@@ -7208,6 +7212,11 @@ function openFinalizeModal(){
     else if(stockLeft===0)stockWarnings.push(esc(item.productName)+' (se agotará)');
   });
   var totalCost=cart.reduce(function(a,b){return a+b.costPrice*b.qty;},0);
+  // FIX: _discMulti no existía en este scope (solo se declaraba en confirmVenta),
+  // lo que lanzaba "_discMulti is not defined" y bloqueaba la apertura del carrito.
+  // En la vista previa el descuento aún es 0 (el campo se crea dentro de este modal),
+  // así que el multiplicador por defecto es 1. El descuento real se aplica en confirmVenta.
+  var _discMulti=1;
   var totalProfit=Math.round(cart.reduce(function(a,b){return a+(b.sellPrice*_discMulti-b.costPrice)*b.qty;},0)*100)/100;
   var totalQty=cart.reduce(function(a,b){return a+b.qty;},0);
 
@@ -9140,6 +9149,10 @@ function saveProd(){
   if(!name){document.getElementById('fN').focus();return;}
   var cat=document.getElementById('fC').value;
   var isS=cat==='servicios';
+  // FIX: rechazar precios negativos en el editor de producto
+  var _co=parseFloat(((document.getElementById('fCo')||{}).value||'').replace(',','.'))||0;
+  var _se=parseFloat(((document.getElementById('fSe')||{}).value||'').replace(',','.'))||0;
+  if(_co<0||_se<0){showToast('\u26a0\uFE0F Los precios no pueden ser negativos');return;}
   var obj={
     cat:cat,isService:isS,
     stock:isS?-1:Math.max(0,parseInt((document.getElementById('fS')||{}).value,10)||0),

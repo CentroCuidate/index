@@ -6,14 +6,16 @@
 <!-- Mejora S3 — CSP. Permite solo recursos confiables. Si añades una nueva
      CDN, hay que incluirla aquí. -->
 <meta http-equiv="Content-Security-Policy" content="
-  default-src 'self' https: data: blob:;
-  script-src 'self' 'unsafe-inline' 'unsafe-eval' https://www.gstatic.com https://script.google.com https://*.google.com https://*.googleapis.com https://cdn.jsdelivr.net;
+  default-src 'self';
+  script-src 'self' 'unsafe-inline' https://www.gstatic.com https://*.googleapis.com https://script.google.com;
   style-src 'self' 'unsafe-inline' https://fonts.googleapis.com;
   font-src 'self' https://fonts.gstatic.com data:;
-  img-src 'self' data: blob: https:;
-  connect-src 'self' https: wss: blob: data:;
-  frame-src 'self' https:;
+  img-src 'self' data: blob: https://*.googleapis.com https://*.firebasestorage.app https://*.googleusercontent.com;
+  connect-src 'self' https://*.firebaseio.com https://*.firebasedatabase.app https://*.googleapis.com https://*.googleusercontent.com https://script.google.com https://api.anthropic.com wss://*.firebaseio.com;
+  worker-src 'self';
+  manifest-src 'self' blob:;
   media-src 'self' blob: data:;
+  frame-src 'none';
   object-src 'none';
   base-uri 'self';
   form-action 'self';
@@ -1673,7 +1675,6 @@ button:focus-visible,[role="button"]:focus-visible,[tabindex]:focus-visible{outl
 /* Restore MC theme before first paint */
 (function(){try{localStorage.removeItem('ccuida_sede_'+((document.cookie.match(/uid=([^;]+)/)||[])[1]||''));}catch(e){}})();
 </script>
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self' https://*.firebaseio.com https://*.firebaseapp.com https://*.googleapis.com https://*.gstatic.com; script-src 'self' 'unsafe-inline' https://*.gstatic.com https://*.googleapis.com https://*.googleusercontent.com https://script.google.com https://*.firebasedatabase.app; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data: https://*.googleapis.com https://*.firebasestorage.app blob:; connect-src 'self' https://*.firebaseio.com https://*.googleapis.com https://*.googleusercontent.com wss://*.firebaseio.com https://script.google.com https://*.firebasedatabase.app; worker-src 'self'; manifest-src 'self' blob:; frame-src 'none'; frame-ancestors 'self'; object-src 'none'">
 </head>
 <body aria-busy="true">
 <a href="#main" style="position:absolute;left:-9999px;top:0;z-index:10001;padding:8px 16px;background:var(--green);color:#fff;font-weight:700;border-radius:4px;text-decoration:none" onfocus="this.style.left='8px'" onblur="this.style.left='-9999px'">Saltar al contenido</a>
@@ -5430,6 +5431,24 @@ function fmt(n){return(+(n||0)).toFixed(2).replace('.',',')+'\u20ac';}
 function fdate(iso){if(!iso)return'';var d=new Date(iso+'T00:00:00');return d.getDate()+'/'+(d.getMonth()+1)+'/'+d.getFullYear();}
 function esc(s){return(s||'').replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;');}
 
+/* ── VALIDACIÓN DE TELÉFONO ──────────────────────────────────────
+   Antes se aceptaba cualquier texto (p.ej. "abc123"), lo que rompía
+   los enlaces de WhatsApp. normalizePhone deja solo dígitos (y un +
+   inicial opcional para internacional); isValidPhone comprueba que
+   quede una cantidad razonable de dígitos (6–15, estándar E.164). */
+function normalizePhone(s){
+  s=(s||'').trim();
+  var plus=s.charAt(0)==='+';
+  var digits=s.replace(/[^0-9]/g,'');
+  return (plus?'+':'')+digits;
+}
+function phoneDigits(s){return (s||'').replace(/[^0-9]/g,'');}
+function isValidPhone(s){
+  var d=phoneDigits(s);
+  return d.length>=6 && d.length<=15;
+}
+
+
 /* ═══════════════════════════════════════════════════════════════
    MEJORA K: clientPicker — componente reusable de selector con buscador.
    Sustituye los <select> nativos por una caja con filtro live, accesible
@@ -6668,6 +6687,15 @@ function saveNewClient(){
     if(f){f.style.borderColor='var(--red)';f.focus();}
     return;
   }
+  // FIX: validar y normalizar el teléfono (antes se aceptaba "abc123",
+  // rompiendo los enlaces de WhatsApp). Aceptamos 6–15 dígitos.
+  if(!isValidPhone(phone)){
+    var f=document.getElementById('ncPhone');
+    if(f){f.style.borderColor='var(--red)';f.focus();}
+    showToast('\u26a0\uFE0F Teléfono no válido — introduce solo números (6–15 dígitos)');
+    return;
+  }
+  phone=normalizePhone(phone);
 
   // Save referidoPor if selected
   var referidoPorId=((document.getElementById('ncReferidoId')||{}).value||'').trim();

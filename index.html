@@ -18401,6 +18401,9 @@ function startBookingListener(){
       }catch(e){}
 
       updateBookingBadge(pending.length);
+      // ── FASE 3: detectar reservas PAGADAS (pago SumUp completado) ──
+      // booking.html marca paid:true + status:'confirmed' al volver del pago.
+      try{ detectPaidBookings(Object.values(reqs), source); }catch(e){ console.warn('[PaidBookings]',e); }
       // Re-renderizar dashboard si está visible
       if(typeof renderDashboard==='function'){
         var dashPage=document.getElementById('page-inicio');
@@ -18443,6 +18446,81 @@ function startBookingListener(){
 }
 
 /* Notificar al admin de una nueva solicitud (toast + sonido + vibración + push) */
+/* ── FASE 3: RESERVAS PAGADAS ──────────────────────────────────────
+   Detecta reservas de taller cuyo pago se ha completado (paid:true) y
+   avisa a la propietaria una sola vez por reserva. Usa una clave de
+   localStorage propia para no mezclarse con las notificaciones de
+   solicitudes pendientes. En la primera carga solo registra (no avisa)
+   para evitar una avalancha al abrir la app. */
+var _paidBookingsInit=false;
+function detectPaidBookings(reqsArr, source){
+  reqsArr=reqsArr||[];
+  var paid=reqsArr.filter(function(r){ return r && r.paid===true; });
+  var key='mdc_notified_paid';
+  var seen={};
+  try{ seen=JSON.parse(localStorage.getItem(key)||'{}'); }catch(e){}
+
+  var isInitial = !_paidBookingsInit || source==='REST initial';
+  var fresh=paid.filter(function(r){ return r.id && !seen[r.id]; });
+
+  if(isInitial){
+    // Solo marcar como vistas, sin avisar
+    fresh.forEach(function(r){ seen[r.id]=Date.now(); });
+    _paidBookingsInit=true;
+  } else if(fresh.length>0){
+    // Avisar de la más reciente por pago
+    var latest=fresh.sort(function(a,b){
+      return (new Date(b.paidAt||b.createdAt||0).getTime())-(new Date(a.paidAt||a.createdAt||0).getTime());
+    })[0];
+    notifyPaidBooking(latest);
+    fresh.forEach(function(r){ seen[r.id]=Date.now(); });
+  }
+
+  // Limpiar entradas viejas (>60 días)
+  try{
+    var cutoff=Date.now()-60*86400000, cleaned={};
+    Object.keys(seen).forEach(function(k){ if(seen[k]>cutoff)cleaned[k]=seen[k]; });
+    localStorage.setItem(key, JSON.stringify(cleaned));
+  }catch(e){}
+}
+
+function notifyPaidBooking(req){
+  if(!req)return;
+  dlog('[PaidBooking] 💳 Reserva pagada:', req.clientName);
+  var when=(req.date||'')+(req.time?' · '+req.time+' h':'');
+  var svc=req.service||'Taller';
+  var priceStr=(req.price?(' · '+(+req.price).toFixed(2).replace('.',',')+' €'):'');
+
+  // Vibración
+  try{ if(navigator.vibrate)navigator.vibrate([120,60,120,60,240]); }catch(e){}
+  // Sonido reutilizando el mismo tono suave
+  try{
+    var audio=new Audio('data:audio/wav;base64,UklGRl4EAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YToEAACAgICAgICAgICAgICAgICAgICAgICAgICAhYWFhYqKioqKjo6OjpKSkpKSlpaWlpaampqamp6enp6eoqKioqKmpqampqqqqqqqrq6urq6ysrKysra2tra2urq6urrCwsLCwsbGxsbGysrKysrOzs7OztLS0tLS1tbW1tbW2tra2tra3t7e3t7i4uLi4uLm5ubm5ubq6urq6urq7u7u7u7u7vLy8vLy8vLy9vb29vb29vb6+vr6+vr6+vr+/v7+/v7+/v7+/wMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwL+/v7+/v7+/v7++vr6+vr6+vr6+vr29vb29vb29vb29vLy8vLy8vLy8vLu7u7u7u7u7u7u7urq6urq6urq6urq5ubm5ubm5ubm5ubi4uLi4uLi4uLi4t7e3t7e3t7e3t7a2tra2tra2tra2tbW1tbW1tbW1tbS0tLS0tLS0tLS0s7OzsrKysrKysrKysrGxsbGxsbGxsbGwsLCwsLCwsLCwr6+vr6+vr6+vr66urq6urq6urq6tra2tra2tra2trKysrKysrKysrKurq6urq6urq6uqqqqqqqqqqqqqqamoqKioqKioqKenp6enp6enp6alpaWlpaWlpaWkpKSkpKSkpKSkpKOjo6Ojo6Ojo6Ojo6Kio6Ojo6OjpKSkpKSkpKSkpaWlpaWmpqampqenp6enqKioqKipqampqaqqqqqrq6urq6ysrKytra2trq6urq+vr6+wsLCwsbGxsbKysrKzs7Ozs7S0tLS1tbW1tra2tra3t7e3uLi4uLm5ubm5urq6uru7u7u8vLy8vb29vb6+vr6+v7+/v8DAwMDAwMHBwcHBwsLCwsLDw8PDw8TExMTExcXFxcXFxsbGxsbGx8fHx8fHx8jIyMjIyMjIycnJycnJycnJycnJysrKysrKysrKysrKy8vLy8vLy8vLy8vLy8vLy8vLy8vLy8vLy8vLy8vLy8vLy8vLy8vLy8vLy8vLy8vLy8vLysrKysrKysrKysrKycnJycnJycnJycnJycnJycnJycjIyMjIyMjIyMjIyMjIyMjIyMjHx8fHx8fHx8fHx8fHx8fHx8fGxsbGxsbGxsbGxsbGxsbGxsbGxcXFxcXFxcXFxcXFxcXFxcXFxcTExMTExMTExMTExMTExMTExMPDw8PDw8PDw8PDw8PDw8PDw8PDwsLCwsLCwsLCwsLCwsLCwsLCwsLBwcHBwcHBwcHBwcHBwcHBwcHBwcDAwMDAwMDAwMDAwMDAwMDAwL+/v7+/v7+/v7+/v7+/v7+/');
+    audio.volume=0.32; audio.play().catch(function(){});
+  }catch(e){}
+
+  // Toast persistente
+  showToast('💳 ¡Reserva pagada! '+(req.clientName||'')+' · '+svc+' · '+when, 8000);
+
+  // Notificación del sistema / service worker
+  try{
+    if('Notification' in window && Notification.permission==='granted'){
+      var n=new Notification('💳 Reserva de taller pagada', {
+        body:(req.clientName||'')+' · '+svc+priceStr+'\n📅 '+when,
+        icon: (typeof APP_LOGO!=='undefined'?APP_LOGO:undefined),
+        tag:'paid-'+(req.id||Date.now())
+      });
+      n.onclick=function(){ window.focus(); goPage('mas'); setTimeout(function(){if(typeof openWorkshopsModal==='function')openWorkshopsModal();},200); n.close(); };
+    } else if(window._swReg && window._swReg.active){
+      window._swReg.active.postMessage({ type:'SCHEDULE_NOTIF', id:'paid-'+Date.now(), delay:100,
+        title:'💳 Reserva de taller pagada', body:(req.clientName||'')+' · '+when });
+    }
+  }catch(e){}
+
+  // Refrescar dashboard si está visible
+  try{ if(currentPage==='inicio'&&document.getElementById('dashboardContent'))renderDashboard(); }catch(e){}
+}
+
 function notifyNewBookingRequest(req){
   if(!req)return;
   dlog('[BookingListener] 🔔 Nueva solicitud:', req.clientName);
@@ -19731,6 +19809,13 @@ var _gcalLastSync = 0;
 function setGcalUrl(url){
   GCAL_URL = (url||'').trim();
   try{localStorage.setItem('ccuida_gcal_url', GCAL_URL);}catch(e){}
+  // FASE 4: guardar también en la config de Firebase para que booking.html
+  // pueda avisar al Apps Script cuando entra un pago (crear evento + WhatsApp).
+  try{
+    if(fbDB && fbAuth && fbAuth.currentUser && GCAL_URL.length>20){
+      fbDB.ref('centrocuidate/booking/cc/config/gcalUrl').set(GCAL_URL).catch(function(){});
+    }
+  }catch(e){}
 }
 
 function isGcalConnected(){ return GCAL_URL.length > 20; }

@@ -417,8 +417,8 @@ function openBooking(wsId){
   h+='<div class="field"><label for="bkNote">Nota (opcional)</label><textarea id="bkNote" placeholder="¿Alguna alergia, duda o preferencia?" maxlength="300"></textarea></div>';
   h+='<label class="gdpr"><input type="checkbox" id="bkGdpr"><span>Acepto que Centro Cuídate guarde mis datos para gestionar esta reserva.</span></label>';
   if(selectedWorkshop.price>0 && selectedWorkshop.sumupLink){
-    h+='<button class="pay-btn" id="payBtn" onclick="startBooking()">💳 Pagar '+priceStr+' € y reservar</button>';
-    h+='<div class="pay-note"><span class="pay-secure">🔒 Pago seguro con SumUp</span> · Tu plaza se confirma al completar el pago</div>';
+    h+='<button class="pay-btn" id="payBtn" onclick="startBooking()">✨ Reservar y pagar '+priceStr+' €</button>';
+    h+='<div class="pay-note"><span class="pay-secure">🔒 Pago seguro con SumUp</span> · Reservas tu plaza y completas el pago en el siguiente paso</div>';
   }else if(selectedWorkshop.price>0 && !selectedWorkshop.sumupLink){
     h+='<button class="pay-btn" id="payBtn" style="background:var(--grad)" onclick="startBooking()">✨ Solicitar plaza</button>';
     h+='<div class="pay-note">El pago se coordinará directamente con el centro tras tu solicitud.</div>';
@@ -467,7 +467,7 @@ function startBooking(){
   try{ localStorage.setItem('cc_pending_booking', JSON.stringify({req:req, sede:sede})); }catch(e){}
 
   function afterWrite(){
-    if(paid){ window.location.href=selectedWorkshop.sumupLink; }
+    if(paid){ showPayScreen(req); }   // OPCIÓN A: reservada → completar pago
     else{ finalizeBooking(req, false); }
   }
 
@@ -483,37 +483,56 @@ function startBooking(){
   }else{ afterWrite(); }
 }
 
+/* OPCIÓN A · Tras crear la reserva, mostramos una pantalla que confirma
+   que la plaza queda reservada y ofrece completar el pago en SumUp.
+   (Los enlaces simples de SumUp no redirigen de vuelta, así que no
+   dependemos de eso: el centro confirma el pago desde su app.) */
+function showPayScreen(req){
+  closeSheet();
+  var d=new Date(req.date+'T00:00:00');
+  var priceStr=(req.price>0?req.price.toFixed(2).replace('.',','):'');
+  var h='<div class="sheet-handle"></div>';
+  h+='<div class="success-wrap">';
+  h+='<div class="success-ring" style="background:var(--grad-gold);box-shadow:0 12px 34px rgba(201,149,42,.36)">💳</div>';
+  h+='<h2>¡Plaza reservada!</h2>';
+  h+='<p>Tu plaza en <strong>'+esc(req.service)+'</strong> queda <strong>reservada</strong>. Solo falta <strong>completar el pago</strong> para confirmarla.</p>';
+  h+='<div class="success-card">';
+  h+='<div class="success-row"><span class="k">Taller</span><span class="v">'+esc(req.service)+'</span></div>';
+  h+='<div class="success-row"><span class="k">Fecha</span><span class="v">'+fmtFullDate(req.date)+'</span></div>';
+  h+='<div class="success-row"><span class="k">Hora</span><span class="v">'+esc(req.time)+' h</span></div>';
+  if(priceStr)h+='<div class="success-row"><span class="k">Importe</span><span class="v">'+priceStr+' €</span></div>';
+  h+='</div>';
+  h+='<a class="pay-btn" style="text-decoration:none;margin:0 6px" href="'+esc(selectedWorkshop.sumupLink)+'" target="_blank" rel="noopener" onclick="_paid=true">💳 Pagar '+(priceStr?priceStr+' € ':'')+'ahora</a>';
+  h+='<div class="pay-note"><span class="pay-secure">🔒 Pago seguro con SumUp</span><br>En cuanto recibamos el pago, el centro te confirmará la plaza por WhatsApp.</div>';
+  h+='<button class="pay-btn" style="background:var(--surface-3);color:var(--text-2);box-shadow:none;margin:12px 6px 0;width:calc(100% - 12px)" onclick="location.href=\'booking.html?sede='+sede+'\'">Volver a los talleres</button>';
+  h+='</div>';
+  $('sheet').innerHTML=h;
+  openOvl();
+}
+
+/* (Compatibilidad) Si algún día se configura un retorno con ?paid=1, lo
+   aceptamos y confirmamos; si no, no hace nada. */
 (function handlePaymentReturn(){
   var params=new URLSearchParams(location.search);
   if(params.get('paid')!=='1')return;
   var pend=null;
   try{ pend=JSON.parse(localStorage.getItem('cc_pending_booking')||'null'); }catch(e){}
-  var proc=$('processing'); if(proc)proc.style.display='flex';
-  if(!pend||!pend.req){ setTimeout(function(){ if(proc)proc.style.display='none'; }, 500); return; }
-  var req=pend.req;
-  req.paid=true; req.status='confirmed'; req.paidAt=new Date().toISOString();
-
-  function done(){
-    try{ localStorage.removeItem('cc_pending_booking'); }catch(e){}
-    try{ history.replaceState({},'','booking.html?sede='+(pend.sede||sede)); }catch(e){}
-    if(proc)proc.style.display='none';
-    finalizeBooking(req, true);
-  }
-
-  if(typeof firebase!=='undefined' && firebase.initializeApp){
-    try{
-      var app; try{app=firebase.app();}catch(_){app=firebase.initializeApp(FB);}
-      var db=firebase.database(app);
-      var sd=pend.sede||sede;
-      var updates={};
-      updates['centrocuidate/booking/'+sd+'/requests/'+req.id+'/status']='confirmed';
-      updates['centrocuidate/booking/'+sd+'/requests/'+req.id+'/paid']=true;
-      updates['centrocuidate/booking/'+sd+'/requests/'+req.id+'/paidAt']=req.paidAt;
-      updates['centrocuidate/booking/'+sd+'/workshops/'+req.workshopId+'/attendees/'+req.id+'/status']='confirmed';
-      updates['centrocuidate/booking/'+sd+'/workshops/'+req.workshopId+'/attendees/'+req.id+'/paid']=true;
-      db.ref().update(updates).then(function(){ notifyConfirmation(req, sd); done(); }).catch(done);
-    }catch(e){ done(); }
-  }else{ done(); }
+  if(!pend||!pend.req)return;
+  var req=pend.req; req.paid=true; req.status='confirmed'; req.paidAt=new Date().toISOString();
+  try{ localStorage.removeItem('cc_pending_booking'); }catch(e){}
+  try{ history.replaceState({},'','booking.html?sede='+(pend.sede||sede)); }catch(e){}
+  try{
+    if(typeof firebase!=='undefined'&&firebase.database){
+      var db=firebase.database(); var sd=pend.sede||sede;
+      var u={};
+      u['centrocuidate/booking/'+sd+'/requests/'+req.id+'/status']='confirmed';
+      u['centrocuidate/booking/'+sd+'/requests/'+req.id+'/paid']=true;
+      u['centrocuidate/booking/'+sd+'/workshops/'+req.workshopId+'/attendees/'+req.id+'/status']='confirmed';
+      u['centrocuidate/booking/'+sd+'/workshops/'+req.workshopId+'/attendees/'+req.id+'/paid']=true;
+      db.ref().update(u);
+    }
+  }catch(e){}
+  finalizeBooking(req, true);
 })();
 
 function notifyConfirmation(req, sd){

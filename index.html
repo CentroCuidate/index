@@ -18839,15 +18839,21 @@ function renderWorkshopsList(){
       attArr.sort(function(a,b){return(a.createdAt||'')<(b.createdAt||'')?-1:1;});
       html+='<div style="background:var(--surface2);border-radius:10px;padding:8px 10px;margin-bottom:10px">';
       attArr.forEach(function(a,idx){
-        var statusCol=a.status==='confirmed'?'var(--green)':a.status==='cancelled'?'var(--red)':'var(--gold)';
-        var statusIcon=a.status==='confirmed'?'✓':a.status==='cancelled'?'✗':'⏳';
-        html+='<div style="display:flex;align-items:center;gap:8px;padding:5px 0'+(idx<attArr.length-1?';border-bottom:1px solid var(--border)':'')+'">';
+        var isPaid=(a.paid===true)||(a.status==='confirmed');
+        var isPend=!isPaid && a.status!=='cancelled';
+        var statusCol=isPaid?'var(--green)':a.status==='cancelled'?'var(--red)':'var(--gold)';
+        var statusIcon=isPaid?'✓':a.status==='cancelled'?'✗':'⏳';
+        html+='<div style="display:flex;align-items:center;gap:8px;padding:6px 0'+(idx<attArr.length-1?';border-bottom:1px solid var(--border)':'')+'">';
         html+='<span style="color:'+statusCol+';font-size:13px;font-weight:800;width:14px;text-align:center">'+statusIcon+'</span>';
-        html+='<span style="flex:1;font-size:12px;font-weight:600;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+esc(a.name||'?')+'</span>';
+        html+='<span style="flex:1;min-width:0;font-size:12px;font-weight:600;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+esc(a.name||'?')+(isPaid?' <span style=\"font-size:9px;font-weight:800;color:var(--green-dark);background:var(--green-light);padding:1px 6px;border-radius:99px;vertical-align:middle\">pagado</span>':(a.status==='pending_payment'?' <span style=\"font-size:9px;font-weight:800;color:var(--gold-dark,#8A6010);background:rgba(232,155,27,.14);padding:1px 6px;border-radius:99px;vertical-align:middle\">pend. pago</span>':''))+'</span>';
         if(a.phone){
-          html+='<a href="https://wa.me/'+esc((a.phone||'').replace(/[^0-9]/g,'').replace(/^34/,'34'))+'" target="_blank" rel="noopener" style="font-size:11px;color:var(--text3);text-decoration:none">'+esc(a.phone)+'</a>';
+          html+='<a href="https://wa.me/'+esc((a.phone||'').replace(/[^0-9]/g,'').replace(/^34/,'34'))+'" target="_blank" rel="noopener" style="font-size:11px;color:var(--text3);text-decoration:none;flex-shrink:0">'+esc(a.phone)+'</a>';
         }
-        html+='<button onclick="event.stopPropagation();removeWorkshopAttendee(\''+item.id+'\',\''+a._key+'\',\''+esc(a.name||'').replace(/'/g,"\\'")+'\')" style="background:transparent;border:none;color:var(--red);font-size:13px;cursor:pointer;padding:2px 6px" aria-label="Quitar inscrita">×</button>';
+        // ✓ Confirmar pago (solo si aún no está pagada)
+        if(isPend){
+          html+='<button onclick="event.stopPropagation();confirmWorkshopPayment(\''+item.id+'\',\''+a._key+'\')" style="flex-shrink:0;padding:4px 10px;border-radius:99px;border:none;background:linear-gradient(135deg,var(--green2,#2ECC8E),var(--green));color:#fff;font-size:10.5px;font-weight:800;cursor:pointer;font-family:inherit" title="Confirmar el pago de esta reserva">✓ Cobrado</button>';
+        }
+        html+='<button onclick="event.stopPropagation();removeWorkshopAttendee(\''+item.id+'\',\''+a._key+'\',\''+esc(a.name||'').replace(/'/g,"\\'")+'\')" style="background:transparent;border:none;color:var(--red);font-size:13px;cursor:pointer;padding:2px 4px;flex-shrink:0" aria-label="Quitar inscrita">×</button>';
         html+='</div>';
       });
       html+='</div>';
@@ -19178,6 +19184,74 @@ function saveWorkshopAttendee(workshopId){
     }catch(e){onResult(false, eRest);}
   });
   setTimeout(function(){onResult(false, new Error('Sin respuesta tras 8s'));},8000);
+}
+
+/* ── OPCIÓN A: Confirmar el pago de una reserva de taller ──────────
+   La propietaria pulsa "✓ Cobrado" cuando ve el pago en SumUp.
+   Marca la inscripción y su solicitud como pagadas/confirmadas,
+   crea el evento VERDE en Google Calendar (nombre + teléfono) y
+   ofrece avisar al cliente por WhatsApp. */
+function confirmWorkshopPayment(workshopId, attendeeKey){
+  var w=_workshopsCache[workshopId];
+  if(!w||!w.attendees||!w.attendees[attendeeKey]){ showToast('No encuentro la reserva'); return; }
+  var a=w.attendees[attendeeKey];
+  var wsName=w.name||'Taller Skin Care';
+  mdcConfirm('¿Confirmar el pago de <strong>'+esc(a.name||'?')+'</strong>?<br><span style="font-size:11px;color:var(--text3)">Se creará el evento en tu Google Calendar.</span>','Confirmar pago','✓ Sí, cobrado',function(){
+    // Optimistic
+    a.paid=true; a.status='confirmed'; a.paidAt=new Date().toISOString();
+    renderWorkshopsList();
+
+    // 1) Guardar la inscripción pagada en Firebase
+    fbRestSet(workshopsPath()+'/'+workshopId+'/attendees/'+attendeeKey, a).catch(function(){
+      try{ if(fbDB)fbDB.ref(workshopsPath()+'/'+workshopId+'/attendees/'+attendeeKey).set(a); }catch(e){}
+    });
+
+    // 2) Marcar también la solicitud (request) enlazada como pagada
+    var reqId=a.requestId||attendeeKey;
+    try{
+      if(fbDB && fbAuth && fbAuth.currentUser){
+        fbDB.ref('centrocuidate/booking/cc/requests/'+reqId).update({status:'confirmed',paid:true,paidAt:a.paidAt}).catch(function(){});
+      }
+    }catch(e){}
+
+    // 3) Crear evento VERDE en Google Calendar (usa tu Apps Script)
+    if(isGcalConnected()){
+      gcalCreateEvent({
+        clientName: a.name||'Cliente',
+        phone: a.phone||'',
+        service: wsName,
+        date: w.date, startTime: w.time, time: w.time,
+        dur: w.dur||90, note: a.note||'',
+        action:'confirmWorkshop'   // usa la rama verde del Apps Script
+      }, function(res){
+        if(res&&res.ok!==false){ showToast('✅ Pago confirmado · evento en Calendar'); }
+        else { showToast('✅ Pago confirmado (Calendar no respondió)',4000); }
+      });
+    }else{
+      showToast('✅ Pago confirmado');
+    }
+    haptic&&haptic('add');
+
+    // 4) Ofrecer avisar al cliente por WhatsApp
+    if(a.phone){
+      setTimeout(function(){
+        var num=(a.phone||'').replace(/[^0-9]/g,''); if(num.indexOf('34')!==0)num='34'+num;
+        var msg='¡Hola '+(a.name||'').split(' ')[0]+'! Tu plaza en el '+wsName+' del '+fmtWorkshopDate(w.date)+' a las '+w.time+' h ya está *confirmada*. ¡Te esperamos! 🌿 Centro Cuídate';
+        mdcConfirm('¿Avisar a <strong>'+esc(a.name||'')+'</strong> por WhatsApp de que su plaza está confirmada?','Avisar al cliente','💬 Abrir WhatsApp',function(){
+          window.open('https://wa.me/'+num+'?text='+encodeURIComponent(msg),'_blank');
+        });
+      },600);
+    }
+  });
+}
+
+function fmtWorkshopDate(iso){
+  if(!iso)return'';
+  var p=iso.split('-'); if(p.length!==3)return iso;
+  var dias=['domingo','lunes','martes','miércoles','jueves','viernes','sábado'];
+  var meses=['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
+  var d=new Date(+p[0],+p[1]-1,+p[2]);
+  return dias[d.getDay()]+' '+d.getDate()+' de '+meses[d.getMonth()];
 }
 
 function removeWorkshopAttendee(workshopId, attendeeKey, name){
@@ -19886,7 +19960,7 @@ async function gcalCreateEvent(appt, cb){
   }
 
   var body={
-    action:     'create',
+    action:     appt.action || 'create',
     clientName: clientName,
     service:    appt.service||'',
     note:       appt.note||'',

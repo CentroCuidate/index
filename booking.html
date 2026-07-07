@@ -140,8 +140,8 @@ button{font-family:inherit;cursor:pointer;border:none;background:none}
 .skel::after{content:'';position:absolute;inset:0;background:linear-gradient(90deg,transparent,rgba(255,255,255,.6),transparent);animation:shim 1.3s infinite}
 @keyframes shim{0%{transform:translateX(-100%)}100%{transform:translateX(100%)}}
 
-.ovl{position:fixed;inset:0;z-index:100;background:rgba(7,45,30,.42);backdrop-filter:blur(4px);display:flex;align-items:flex-end;justify-content:center;opacity:0;transition:opacity .25s}
-.ovl.on{opacity:1}
+.ovl{position:fixed;inset:0;z-index:100;background:rgba(7,45,30,.42);backdrop-filter:blur(4px);display:none;align-items:flex-end;justify-content:center;opacity:0;transition:opacity .25s;pointer-events:none}
+.ovl.on{opacity:1;pointer-events:auto}
 .sheet{
   width:100%;max-width:520px;max-height:92vh;overflow-y:auto;background:var(--surface);
   border-radius:var(--r-xl) var(--r-xl) 0 0;box-shadow:var(--sh-lg);
@@ -256,7 +256,7 @@ button{font-family:inherit;cursor:pointer;border:none;background:none}
   </footer>
 </div>
 
-<div class="ovl" id="ovl">
+<div class="ovl" id="ovl" style="display:none">
   <div class="sheet" id="sheet"></div>
 </div>
 
@@ -431,8 +431,9 @@ function openBooking(wsId){
   openOvl();
 }
 
-function openOvl(){ var o=$('ovl'); o.style.display='flex'; requestAnimationFrame(function(){o.classList.add('on');}); document.body.style.overflow='hidden'; }
-function closeSheet(){ var o=$('ovl'); o.classList.remove('on'); document.body.style.overflow=''; setTimeout(function(){o.style.display='none';},300); }
+var _closeTimer=null;
+function openOvl(){ var o=$('ovl'); if(_closeTimer){clearTimeout(_closeTimer);_closeTimer=null;} o.style.display='flex'; requestAnimationFrame(function(){o.classList.add('on');}); document.body.style.overflow='hidden'; }
+function closeSheet(){ var o=$('ovl'); o.classList.remove('on'); document.body.style.overflow=''; if(_closeTimer)clearTimeout(_closeTimer); _closeTimer=setTimeout(function(){o.style.display='none';_closeTimer=null;},300); }
 $('ovl').addEventListener('click',function(e){ if(e.target===this)closeSheet(); });
 
 function bkErr(msg){ var e=$('bkErr'); if(e){e.textContent=msg;e.classList.add('on');} }

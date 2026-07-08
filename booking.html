@@ -698,27 +698,44 @@ function confetti(){
   }catch(e){}
 }
 
-/* ═══ TESTIMONIOS ═══
-   ⚠️ SUSTITUYE estos EJEMPLOS por opiniones reales de tus clientas
-   (con su permiso). Deja el array vacío [] para ocultar la sección. */
-var TESTIMONIOS=[
-  {nombre:'M.ª (EJEMPLO — sustituir)', texto:'Salí del taller con la piel radiante y un montón de trucos que uso a diario.', estrellas:5},
-  {nombre:'L. (EJEMPLO — sustituir)',  texto:'Ambiente cercano, grupos pequeños y productos de calidad. Repetiré seguro.', estrellas:5},
-  {nombre:'S. (EJEMPLO — sustituir)',  texto:'Me encantó el diagnóstico personalizado. Todo muy bien explicado.', estrellas:5}
+/* ═══ SECCIÓN "QUÉ TE LLEVAS" + TESTIMONIOS ═══
+   Mientras no haya testimonios reales, se muestran los BENEFICIOS del
+   taller (100% honesto). Cuando tengas frases REALES de clientas (con
+   su permiso), añádelas al array TESTIMONIOS y sustituirán a los
+   beneficios automáticamente. Formato:
+   {nombre:'María G.', texto:'…', estrellas:5}                       */
+var TESTIMONIOS=[]; // ← pega aquí las opiniones reales cuando las tengas
+
+var BENEFICIOS=[
+  {icono:'✨', titulo:'Diagnóstico personalizado', texto:'Analizamos tu piel y te llevas recomendaciones hechas a tu medida.'},
+  {icono:'🧴', titulo:'Rutina paso a paso', texto:'Aprendes una rutina facial completa con productos profesionales, práctica y fácil de repetir en casa.'},
+  {icono:'👥', titulo:'Grupos reducidos', texto:'Plazas limitadas para que la atención sea cercana y puedas preguntar todo lo que quieras.'}
 ];
+
 function renderTestimonios(){
   var grid=$('testiGrid'), lbl=$('testiLabel');
   if(!grid||!lbl)return;
-  if(!TESTIMONIOS.length){grid.style.display='none';lbl.style.display='none';return;}
   var h='';
-  TESTIMONIOS.forEach(function(t){
-    var stars=''; for(var i=0;i<(t.estrellas||5);i++)stars+='★';
-    h+='<div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r-lg);padding:16px 18px;box-shadow:var(--sh-sm)">';
-    h+='<div style="color:var(--gold);font-size:14px;letter-spacing:2px;margin-bottom:8px">'+stars+'</div>';
-    h+='<div style="font-size:13.5px;font-weight:600;color:var(--text-2);line-height:1.6;font-style:italic">“'+esc(t.texto)+'”</div>';
-    h+='<div style="margin-top:10px;font-size:12px;font-weight:800;color:var(--text-3)">— '+esc(t.nombre)+'</div>';
-    h+='</div>';
-  });
+  if(TESTIMONIOS.length){
+    lbl.querySelector('h2').textContent='Lo que dicen nuestras clientas';
+    TESTIMONIOS.forEach(function(t){
+      var stars=''; for(var i=0;i<(t.estrellas||5);i++)stars+='★';
+      h+='<div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r-lg);padding:16px 18px;box-shadow:var(--sh-sm)">';
+      h+='<div style="color:var(--gold);font-size:14px;letter-spacing:2px;margin-bottom:8px">'+stars+'</div>';
+      h+='<div style="font-size:13.5px;font-weight:600;color:var(--text-2);line-height:1.6;font-style:italic">“'+esc(t.texto)+'”</div>';
+      h+='<div style="margin-top:10px;font-size:12px;font-weight:800;color:var(--text-3)">— '+esc(t.nombre)+'</div>';
+      h+='</div>';
+    });
+  }else{
+    lbl.querySelector('h2').textContent='Qué te llevas del taller';
+    BENEFICIOS.forEach(function(bf){
+      h+='<div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r-lg);padding:16px 18px;box-shadow:var(--sh-sm);display:flex;gap:14px;align-items:flex-start">';
+      h+='<div style="width:44px;height:44px;border-radius:13px;background:linear-gradient(135deg,rgba(46,204,142,.16),rgba(31,170,118,.06));display:flex;align-items:center;justify-content:center;font-size:22px;flex-shrink:0">'+bf.icono+'</div>';
+      h+='<div><div style="font-size:14px;font-weight:900;margin-bottom:4px">'+esc(bf.titulo)+'</div>';
+      h+='<div style="font-size:12.5px;font-weight:600;color:var(--text-2);line-height:1.55">'+esc(bf.texto)+'</div></div>';
+      h+='</div>';
+    });
+  }
   grid.innerHTML=h; grid.style.display=''; lbl.style.display='';
 }
 renderTestimonios();

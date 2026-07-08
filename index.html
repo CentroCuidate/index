@@ -11491,8 +11491,111 @@ function startWorkshopsDashListener(){
       var v=s.val()||{};
       _workshopsCache=v;
       try{localStorage.setItem('mdc_workshops_backup', JSON.stringify(v));}catch(e){}
+      try{cleanExpiredWorkshopHolds();}catch(e){}
       if(document.getElementById('workshopsList'))renderWorkshopsList();
       if(currentPage==='inicio'&&document.getElementById('dashboardContent'))renderDashboard();
+    });
+  }catch(e){}
+}
+
+/* ── FALLO A: CADUCIDAD DE RESERVAS SIN PAGAR ─────────────────────
+   Una reserva 'pending_payment' que lleve >48h sin confirmarse deja de
+   ocupar plaza: se elimina del taller y su solicitud pasa a 'expired'.
+   Se avisa a la propietaria con un toast resumen (1 vez por sesión). */
+var WS_EXPIRY_MS=48*3600*1000;
+var _expiryCleanDone=false;
+function cleanExpiredWorkshopHolds(){
+  if(_expiryCleanDone||!fbDB||!fbAuth||!fbAuth.currentUser)return;
+  var cache=_workshopsCache||{}; var released=0;
+  Object.keys(cache).forEach(function(wid){
+    var w=cache[wid]; if(!w||!w.attendees)return;
+    Object.keys(w.attendees).forEach(function(ak){
+      var a=w.attendees[ak]; if(!a)return;
+      var paid=(a.paid===true)||(a.status==='confirmed');
+      if(paid||a.status!=='pending_payment')return;
+      var t=new Date(a.createdAt||0).getTime();
+      if((Date.now()-t)<=WS_EXPIRY_MS)return;
+      released++;
+      delete w.attendees[ak];
+      fbDB.ref(workshopsPath()+'/'+wid+'/attendees/'+ak).remove().catch(function(){});
+      var reqId=a.requestId||ak;
+      fbDB.ref('centrocuidate/booking/cc/requests/'+reqId+'/status').set('expired').catch(function(){});
+    });
+  });
+  _expiryCleanDone=true;
+  if(released>0){
+    showToast('⏳ '+released+' reserva'+(released!==1?'s':'')+' sin pagar (+48h) liberada'+(released!==1?'s':'')+' — plazas disponibles de nuevo',7000);
+    if(document.getElementById('workshopsList'))renderWorkshopsList();
+    if(currentPage==='inicio')renderDashboard();
+  }
+}
+
+
+/* ── MINI CALENDARIO DE TALLERES (vista mes) ──────────────────────
+   Muestra el mes actual con un punto en cada día con taller. Tocar un
+   día con taller salta a esa tarjeta en la lista. Flechas ‹ › cambian mes. */
+var _wsCalOffset=0;
+function renderWsMiniCal(){
+  var el=document.getElementById('wsMiniCal'); if(!el)return;
+  var base=new Date(); base.setDate(1); base.setMonth(base.getMonth()+_wsCalOffset);
+  var y=base.getFullYear(), m=base.getMonth();
+  var meses=['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
+  var daysIn=new Date(y,m+1,0).getDate();
+  var firstDow=(new Date(y,m,1).getDay()+6)%7; // lunes=0
+  var todayIso=new Date().toISOString().slice(0,10);
+  // días con taller de este mes
+  var byDay={};
+  Object.keys(_workshopsCache||{}).forEach(function(id){
+    var w=_workshopsCache[id]; if(!w||!w.date||w.cancelled)return;
+    var p=w.date.split('-');
+    if(+p[0]===y && (+p[1]-1)===m){ (byDay[+p[2]]=byDay[+p[2]]||[]).push(id); }
+  });
+  var h='<div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r-lg);padding:12px;box-shadow:var(--shadow-xs)">';
+  h+='<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">';
+  h+='<button type="button" onclick="_wsCalOffset--;renderWsMiniCal()" style="width:28px;height:28px;border-radius:9px;border:1px solid var(--border);background:var(--surface2);color:var(--text2);font-weight:900;cursor:pointer">‹</button>';
+  h+='<span style="font-size:13px;font-weight:900;color:var(--text)">'+meses[m]+' '+y+'</span>';
+  h+='<button type="button" onclick="_wsCalOffset++;renderWsMiniCal()" style="width:28px;height:28px;border-radius:9px;border:1px solid var(--border);background:var(--surface2);color:var(--text2);font-weight:900;cursor:pointer">›</button>';
+  h+='</div>';
+  h+='<div style="display:grid;grid-template-columns:repeat(7,1fr);gap:2px;text-align:center">';
+  ['L','M','X','J','V','S','D'].forEach(function(d){h+='<div style="font-size:9px;font-weight:800;color:var(--text3);padding:3px 0">'+d+'</div>';});
+  for(var b=0;b<firstDow;b++)h+='<div></div>';
+  for(var d=1;d<=daysIn;d++){
+    var iso=y+'-'+String(m+1).padStart(2,'0')+'-'+String(d).padStart(2,'0');
+    var has=byDay[d];
+    var isToday=iso===todayIso;
+    var st='font-size:11.5px;font-weight:'+(has?'900':'600')+';padding:5px 0;border-radius:8px;position:relative;'
+      +(isToday?'background:var(--green-light);color:var(--green-dark);':'color:var(--text2);')
+      +(has?'cursor:pointer;':'');
+    h+='<div style="'+st+'"'+(has?' onclick="_wsCalJump(\''+has[0]+'\')"':'')+'>'+d
+      +(has?'<span style="position:absolute;bottom:1px;left:50%;transform:translateX(-50%);width:5px;height:5px;border-radius:50%;background:var(--green)"></span>':'')
+      +'</div>';
+  }
+  h+='</div></div>';
+  el.innerHTML=h;
+}
+function _wsCalJump(wid){
+  var card=document.getElementById('wscard-'+wid);
+  if(card){card.scrollIntoView({behavior:'smooth',block:'center'});card.style.transition='box-shadow .3s';card.style.boxShadow='0 0 0 3px var(--green)';setTimeout(function(){card.style.boxShadow='';},1400);}
+}
+
+/* ── KPI COUNT-UP: los números del inicio "cuentan" al entrar ───── */
+function animateCountUps(root){
+  try{
+    if(matchMedia('(prefers-reduced-motion: reduce)').matches)return;
+    (root||document).querySelectorAll('.kpi-countup').forEach(function(el){
+      if(el._counted)return; el._counted=true;
+      var txt=el.textContent, isEur=/€/.test(txt);
+      var num=parseFloat(txt.replace(/[^0-9,.-]/g,'').replace(/\./g,'').replace(',','.'));
+      if(isNaN(num)||num===0)return;
+      var t0=null, dur=700;
+      function frame(ts){
+        if(!t0)t0=ts;
+        var k=Math.min(1,(ts-t0)/dur); k=1-Math.pow(1-k,3);
+        var v=num*k;
+        el.textContent=(isEur? v.toFixed(2).replace('.',',')+'€' : String(Math.round(v)));
+        if(k<1)requestAnimationFrame(frame); else el.textContent=txt;
+      }
+      requestAnimationFrame(frame);
     });
   }catch(e){}
 }
@@ -11518,10 +11621,36 @@ function buildWorkshopsDashSection(){
   var dias=['dom','lun','mar','mié','jue','vie','sáb'];
   var meses=['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic'];
 
+  // Estadística del mes: € cobrados por talleres + plazas vendidas/libres
+  var mNow=new Date().toISOString().slice(0,7);
+  var mSold=0,mFree=0,mEur=0;
+  Object.keys(cache).forEach(function(id){
+    var w=cache[id]; if(!w||!w.date||w.cancelled)return;
+    if((w.date||'').slice(0,7)!==mNow)return;
+    var att=w.attendees||{};
+    var arr=Object.keys(att).map(function(k){return att[k];});
+    var paidN=arr.filter(function(a){return a&&((a.paid===true)||(a.status==='confirmed'));}).length;
+    mSold+=paidN;
+    mFree+=Math.max(0,(w.maxAttendees||8)-arr.length);
+    mEur+=paidN*(parseFloat(w.price)||0);
+  });
+
   var out='<div class="sec-lbl" style="margin-top:14px;display:flex;align-items:center;justify-content:space-between">';
   out+='<span>&#127895; Próximos talleres</span>';
   out+='<button onclick="openWorkshopEdit(\'\')" style="padding:5px 11px;border-radius:var(--r-pill);border:1.5px solid var(--green);background:var(--green-light);color:var(--green-dark);font-size:11px;font-weight:800;cursor:pointer;font-family:inherit">+ Programar</button>';
   out+='</div>';
+
+  if(mSold>0||mEur>0){
+    var tot=mSold+mFree; var pct=tot>0?Math.round(mSold/tot*100):0;
+    out+='<div style="margin:0 18px 10px;background:var(--surface);border:1px solid var(--border);border-radius:var(--r-lg);padding:11px 14px;box-shadow:var(--shadow-xs)">';
+    out+='<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:7px">';
+    out+='<span style="font-size:11px;font-weight:800;color:var(--text3);text-transform:uppercase;letter-spacing:.05em">Talleres este mes</span>';
+    out+='<span style="font-size:15px;font-weight:900;color:var(--green-dark)" class="kpi-countup" data-eur="1">'+mEur.toFixed(2).replace('.',',')+'€</span>';
+    out+='</div>';
+    out+='<div style="height:8px;border-radius:99px;background:var(--surface2);overflow:hidden"><div style="height:100%;width:'+pct+'%;border-radius:99px;background:linear-gradient(90deg,var(--green2,#2ECC8E),var(--green));transition:width .8s cubic-bezier(.22,.61,.36,1)"></div></div>';
+    out+='<div style="display:flex;justify-content:space-between;margin-top:5px;font-size:10.5px;font-weight:700;color:var(--text3)"><span>💳 '+mSold+' plaza'+(mSold!==1?'s':'')+' vendida'+(mSold!==1?'s':'')+'</span><span>'+mFree+' libre'+(mFree!==1?'s':'')+'</span></div>';
+    out+='</div>';
+  }
 
   if(!list.length){
     out+='<div style="margin:0 18px;background:var(--surface);border:1px solid var(--border);border-radius:var(--r-lg);padding:20px 16px;text-align:center;box-shadow:var(--shadow-xs)">';
@@ -11683,9 +11812,9 @@ function renderDashboard(){
   var mesCompareCls=mesCompare!==null?(mesCompare>=0?'color:var(--green-dark)':'color:var(--coral-dark)'):'';
 
   out+='<div class="dash-kpi-row">';
-  out+='<div class="dash-kpi dk-gold"><div class="dk-icon">&#128176;</div><div class="dk-lbl">Ventas hoy</div><div class="dk-val">'+fmtShort(todayRev)+'</div><div class="dk-sub">'+todayVentas.length+' ticket'+(todayVentas.length!==1?'s':'')+(todayProfit>0?' · +'+fmtShort(todayProfit):'')+'</div></div>';
-  out+='<div class="dash-kpi dk-green"><div class="dk-icon">&#128200;</div><div class="dk-lbl">Este mes</div><div class="dk-val">'+fmtShort(mesRev)+'</div><div class="dk-sub" style="'+mesCompareCls+'">'+(mesCompareTxt||mesVentas.length+' venta'+(mesVentas.length!==1?'s':''))+'</div></div>';
-  out+='<div class="dash-kpi dk-blue"><div class="dk-icon">&#128197;</div><div class="dk-lbl">Citas hoy</div><div class="dk-val">'+todayCitas.length+'</div><div class="dk-sub">'+(todayCitas.length>0?'Pr\u00f3xima: '+(todayCitas[0].time||'--:--'):'Sin citas')+'</div></div>';
+  out+='<div class="dash-kpi dk-gold"><div class="dk-icon">&#128176;</div><div class="dk-lbl">Ventas hoy</div><div class="dk-val kpi-countup">'+fmtShort(todayRev)+'</div><div class="dk-sub">'+todayVentas.length+' ticket'+(todayVentas.length!==1?'s':'')+(todayProfit>0?' · +'+fmtShort(todayProfit):'')+'</div></div>';
+  out+='<div class="dash-kpi dk-green"><div class="dk-icon">&#128200;</div><div class="dk-lbl">Este mes</div><div class="dk-val kpi-countup">'+fmtShort(mesRev)+'</div><div class="dk-sub" style="'+mesCompareCls+'">'+(mesCompareTxt||mesVentas.length+' venta'+(mesVentas.length!==1?'s':''))+'</div></div>';
+  out+='<div class="dash-kpi dk-blue"><div class="dk-icon">&#128197;</div><div class="dk-lbl">Citas hoy</div><div class="dk-val kpi-countup">'+todayCitas.length+'</div><div class="dk-sub">'+(todayCitas.length>0?'Pr\u00f3xima: '+(todayCitas[0].time||'--:--'):'Sin citas')+'</div></div>';
   out+='<div class="dash-kpi dk-'+(stockAlerts>0?'red':'teal')+'"><div class="dk-icon">'+(stockAlerts>0?'&#9888;\ufe0f':'&#10003;')+'</div><div class="dk-lbl">Stock</div><div class="dk-val">'+stockAlerts+'</div><div class="dk-sub">'+(stockAlerts>0?'alertas de stock':'todo correcto')+'</div></div>';
   out+='</div>';
 
@@ -11936,6 +12065,7 @@ function renderDashboard(){
   out+=buildIntelligencePanel();
 
   el.innerHTML=out;
+  try{animateCountUps(el);}catch(e){}
   // V1: Gráfico de tendencia
   renderTrendChart();
 }
@@ -18708,7 +18838,8 @@ function openWorkshopsModal(){
   h+='<div class="sh-title">🌸 Talleres Skin Care</div>';
   h+='<div class="sh-body">';
   h+='<div style="font-size:12px;color:var(--text3);font-weight:500;margin-bottom:14px;line-height:1.6">Programa fechas de taller con plazas limitadas. Las clientas verán las fechas disponibles en el booking online.</div>';
-  h+='<button id="wsProgramarBtn" type="button" style="width:100%;padding:14px;border-radius:var(--r-lg);border:2px dashed var(--green);background:var(--green-light);color:var(--green-dark);font-size:14px;font-weight:800;cursor:pointer;font-family:inherit;margin-bottom:16px">+ Programar nuevo taller</button>';
+  h+='<button id="wsProgramarBtn" type="button" style="width:100%;padding:14px;border-radius:var(--r-lg);border:2px dashed var(--green);background:var(--green-light);color:var(--green-dark);font-size:14px;font-weight:800;cursor:pointer;font-family:inherit;margin-bottom:12px">+ Programar nuevo taller</button>';
+  h+='<div id="wsMiniCal" style="margin-bottom:14px"></div>';
   h+='<div id="workshopsList"><div style="text-align:center;padding:24px"><div class="spin" style="width:28px;height:28px;border:3px solid var(--border2);border-top-color:var(--green);border-radius:50%;margin:0 auto;animation:spin .7s linear infinite"></div></div></div>';
   h+='<div class="sh-actions"><button class="sbtn gho" onclick="closeMod()">Cerrar</button></div>';
   h+='</div></div></div>';
@@ -18819,6 +18950,7 @@ function renderWorkshopsList(){
       +'<div style="font-size:13px;font-weight:600">Aún no hay talleres programados</div>'
       +'<div style="font-size:11.5px;margin-top:6px">Pulsa el botón verde de arriba para crear el primero</div>'
       +'</div>';
+    try{renderWsMiniCal();}catch(e){}
     return;
   }
   var html='';
@@ -18842,7 +18974,7 @@ function renderWorkshopsList(){
     var dateLabel=dias[dt.getDay()]+' '+dt.getDate()+' '+meses[dt.getMonth()];
     var wsName=w.name||'Taller Skin Care';
     var hasPay=!!(w.price>0 && w.sumupLink);
-    html+='<div style="background:var(--surface);border:1.5px solid '+(isPast?'var(--border)':color)+';border-radius:var(--r-lg);padding:13px 15px;margin-bottom:10px;'+(isPast?'opacity:.65':'')+'">';
+    html+='<div id="wscard-'+item.id+'" style="background:var(--surface);border:1.5px solid '+(isPast?'var(--border)':color)+';border-radius:var(--r-lg);padding:13px 15px;margin-bottom:10px;'+(isPast?'opacity:.65':'')+'">';
     // Cabecera
     html+='<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;margin-bottom:8px">';
     html+='<div style="flex:1;min-width:0">';
@@ -18902,6 +19034,7 @@ function renderWorkshopsList(){
     html+='</div>';
   });
   el.innerHTML=html;
+  try{renderWsMiniCal();}catch(e){}
 }
 
 function openWorkshopEdit(workshopId){

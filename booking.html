@@ -11,9 +11,8 @@
 <meta property="og:description" content="Reserva tu plaza en nuestros talleres. Plazas limitadas.">
 <meta property="og:type" content="website">
 <meta name="twitter:card" content="summary">
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;500;600;700;800;900&family=Playfair+Display:wght@600;700;800&display=swap" rel="stylesheet">
+<!-- Sin Google Fonts remotas: cargarlas enviaba la IP de cada visitante a Google
+     sin consentimiento (motivo de sanciones RGPD en la UE). Usamos fuentes del sistema. -->
 <style>
 :root{
   --green:#1FAA76; --green-light:#2ECC8E; --green-dark:#0F7D52; --green-deep:#075339;
@@ -49,7 +48,7 @@
 *{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
 html{scroll-behavior:smooth}
 body{
-  font-family:Nunito,system-ui,sans-serif;background:var(--bg);color:var(--text);
+  font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,system-ui,sans-serif;background:var(--bg);color:var(--text);
   min-height:100vh;min-height:100dvh;line-height:1.5;
   -webkit-font-smoothing:antialiased;overflow-x:hidden;
 }
@@ -76,7 +75,7 @@ button{font-family:inherit;cursor:pointer;border:none;background:none}
   color:var(--green-dark);background:rgba(31,170,118,.10);padding:5px 14px;border-radius:var(--r-pill);
   margin-bottom:12px;
 }
-.hero-title{font-family:'Playfair Display',serif;font-size:34px;font-weight:800;letter-spacing:-.01em;line-height:1.08}
+.hero-title{font-family:Georgia,'Times New Roman',serif;font-size:34px;font-weight:800;letter-spacing:-.01em;line-height:1.08}
 .hero-title .accent{color:var(--green-dark)}
 .hero-sub{margin-top:10px;font-size:14.5px;font-weight:600;color:var(--text-2);max-width:400px;margin-left:auto;margin-right:auto}
 .hero-center{
@@ -218,7 +217,7 @@ button{font-family:inherit;cursor:pointer;border:none;background:none}
   box-shadow:0 12px 34px rgba(31,170,118,.36);animation:pop .5s cubic-bezier(.22,1.4,.5,1);
 }
 @keyframes pop{0%{transform:scale(0)}60%{transform:scale(1.12)}100%{transform:scale(1)}}
-.success-wrap h2{font-family:'Playfair Display',serif;font-size:26px;font-weight:800;margin-bottom:8px}
+.success-wrap h2{font-family:Georgia,'Times New Roman',serif;font-size:26px;font-weight:800;margin-bottom:8px}
 .success-wrap p{font-size:14px;font-weight:600;color:var(--text-2);line-height:1.6;max-width:380px;margin:0 auto 18px}
 .success-card{background:var(--surface-2);border:1px solid var(--border);border-radius:var(--r-md);padding:16px;text-align:left;margin:0 6px 16px}
 .success-row{display:flex;align-items:center;gap:10px;padding:7px 0;font-size:13.5px;font-weight:700}
@@ -309,6 +308,13 @@ button{font-family:inherit;cursor:pointer;border:none;background:none}
 
   <footer class="foot">
     <div class="addr" id="footAddr"></div>
+    <div style="display:flex;justify-content:center;gap:14px;margin-top:14px;font-size:11.5px;font-weight:800">
+      <a href="#" onclick="openLegal('aviso');return false" style="color:var(--text-3);text-decoration:none">Aviso legal</a>
+      <span style="color:var(--text-muted)">·</span>
+      <a href="#" onclick="openLegal('privacidad');return false" style="color:var(--text-3);text-decoration:none">Privacidad</a>
+      <span style="color:var(--text-muted)">·</span>
+      <a href="#" onclick="openLegal('condiciones');return false" style="color:var(--text-3);text-decoration:none">Condiciones</a>
+    </div>
     <div class="brand">MDC Leiva · Gestión de Centros</div>
   </footer>
 </div>
@@ -465,7 +471,7 @@ function renderWorkshops(){
     }
     if(w.note)html+='<div class="ws-note">'+esc(w.note)+'</div>';
     html+='<div class="ws-meta">';
-    if(w.price>0)html+='<span class="ws-chip price">💳 '+w.price.toFixed(2).replace('.',',')+' €</span>';
+    if(w.price>0)html+='<span class="ws-chip price">💳 '+w.price.toFixed(2).replace('.',',')+' € <span style="opacity:.8;font-weight:700;font-size:10px">IVA incl.</span></span>';
     html+='<span class="ws-chip spots'+(few?' few':'')+'">👥 '+(left>0?(left+' plaza'+(left!==1?'s':'')+' libre'+(left!==1?'s':'')):'Completo')+'</span>';
     html+='<button type="button" class="ws-chip" style="border:none;cursor:pointer;background:rgba(37,211,102,.13);color:#128C7E" onclick="event.stopPropagation();shareWorkshop(\''+w.id+'\')">📤 Compartir</button>';
     html+='</div>';
@@ -500,16 +506,16 @@ function openBooking(wsId){
   h+='<div class="book-summary">';
   h+='<div class="cal"><span class="m">'+MESES[d.getMonth()]+'</span><span class="d">'+d.getDate()+'</span></div>';
   h+='<div class="info"><div class="n">'+esc(selectedWorkshop.name)+'</div><div class="t">🕐 '+esc(w.time)+' h · '+fmtFullDate(w.date)+'</div></div>';
-  if(selectedWorkshop.price>0)h+='<div class="price"><div class="amt">'+priceStr+' €</div><div class="lbl">Reserva</div></div>';
+  if(selectedWorkshop.price>0)h+='<div class="price"><div class="amt">'+priceStr+' €</div><div class="lbl">IVA incluido</div></div>';
   h+='</div>';
   h+='<div class="err-msg" id="bkErr"></div>';
   h+='<div class="field"><label for="bkName">Tu nombre completo</label><input id="bkName" type="text" autocomplete="name" placeholder="Nombre y apellidos" maxlength="60"></div>';
   h+='<div class="field"><label for="bkPhone">Teléfono móvil</label><input id="bkPhone" type="tel" inputmode="tel" autocomplete="tel" placeholder="6XX XXX XXX" maxlength="20"></div>';
   h+='<div class="field"><label for="bkNote">Nota (opcional)</label><textarea id="bkNote" placeholder="¿Alguna alergia, duda o preferencia?" maxlength="300"></textarea></div>';
-  h+='<label class="gdpr"><input type="checkbox" id="bkGdpr"><span>Acepto que Centro Cuídate guarde mis datos para gestionar esta reserva.</span></label>';
+  h+='<label class="gdpr"><input type="checkbox" id="bkGdpr"><span>He leído y acepto la <a href="#" onclick="openLegal(\'privacidad\');return false">política de privacidad</a> y las <a href="#" onclick="openLegal(\'condiciones\');return false">condiciones de reserva</a>.</span></label>';
   if(selectedWorkshop.price>0 && selectedWorkshop.sumupLink){
     h+='<button class="pay-btn" id="payBtn" onclick="startBooking()">✨ Reservar y pagar '+priceStr+' €</button>';
-    h+='<div class="pay-note"><span class="pay-secure">🔒 Pago seguro con SumUp</span> · Reservas tu plaza y completas el pago en el siguiente paso</div>';
+    h+='<div class="pay-note"><span class="pay-secure">🔒 Pago seguro con SumUp</span> · Reservas tu plaza y completas el pago en el siguiente paso<br><span style="opacity:.85">Al ser un servicio con fecha concreta, no aplica el derecho de desistimiento (art. 103.l LGDCU). Consulta las <a href="#" onclick="openLegal(\'condiciones\');return false" style="color:var(--green-dark)">condiciones de cancelación</a>.</span></div>';
   }else if(selectedWorkshop.price>0 && !selectedWorkshop.sumupLink){
     h+='<button class="pay-btn" id="payBtn" style="background:var(--grad)" onclick="startBooking()">✨ Solicitar plaza</button>';
     h+='<div class="pay-note">El pago se coordinará directamente con el centro tras tu solicitud.</div>';
@@ -739,6 +745,43 @@ function renderTestimonios(){
   grid.innerHTML=h; grid.style.display=''; lbl.style.display='';
 }
 renderTestimonios();
+
+/* ═══ TEXTOS LEGALES ═══════════════════════════════════════════════
+   Titular: María del Carmen Leiva Rueda · NIF 76433527L
+   Estructura conforme a LSSI-CE, RGPD/LOPDGDD y LGDCU.
+   Recomendado: revisión final por asesoría/abogado de consumo. */
+var LEGAL={
+  aviso:{t:'Aviso legal',h:''
+    +'<p><strong>Titular:</strong> María del Carmen Leiva Rueda<br>'
+    +'<strong>NIF:</strong> 76433527L<br>'
+    +'<strong>Domicilio:</strong> Calle Arquímedes 32, Oficina 9, 29100 Coín (Málaga)<br>'
+    +'<strong>Contacto:</strong> WhatsApp/Tel. 687 864 034</p>'
+    +'<p>Este sitio web permite consultar y reservar plaza en los talleres presenciales de Centro Cuídate. El uso del sitio implica la aceptación de este aviso legal.</p>'
+    +'<p>Los contenidos, marca y logotipo son titularidad de su propietaria. Queda prohibida su reproducción sin autorización.</p>'},
+  privacidad:{t:'Política de privacidad',h:''
+    +'<p><strong>Responsable:</strong> María del Carmen Leiva Rueda, NIF 76433527L, Calle Arquímedes 32, Oficina 9, 29100 Coín (Málaga). Contacto: WhatsApp/Tel. 687 864 034.</p>'
+    +'<p><strong>Datos que tratamos:</strong> nombre, teléfono y, en su caso, la nota que nos indiques al reservar.</p>'
+    +'<p><strong>Finalidad:</strong> gestionar tu reserva de plaza en el taller, confirmártela y contactarte por teléfono o WhatsApp en relación con la misma.</p>'
+    +'<p><strong>Base jurídica:</strong> tu consentimiento y la ejecución de la relación contractual (la reserva).</p>'
+    +'<p><strong>Conservación:</strong> las reservas no confirmadas se eliminan a las 48 horas. Los datos de reservas confirmadas se conservan el tiempo necesario para la gestión del servicio y las obligaciones legales.</p>'
+    +'<p><strong>Destinatarios:</strong> los datos se alojan en Google Firebase (servidores en la Unión Europea). El pago se realiza directamente en SumUp; nunca vemos los datos de tu tarjeta. No cedemos datos a terceros para publicidad.</p>'
+    +'<p><strong>Tus derechos:</strong> puedes ejercer los derechos de acceso, rectificación, supresión, oposición, limitación y portabilidad contactando con el centro por WhatsApp (687 864 034) o presencialmente, indicando "Protección de datos". También puedes reclamar ante la AEPD (aepd.es).</p>'},
+  condiciones:{t:'Condiciones de reserva',h:''
+    +'<p><strong>Objeto:</strong> reserva de plaza en talleres presenciales de Centro Cuídate con fecha y hora determinadas y plazas limitadas.</p>'
+    +'<p><strong>Precio y pago:</strong> el precio indicado incluye IVA. La plaza queda confirmada al completarse el pago a través de SumUp. Si la reserva no se paga en 48 horas, la plaza se libera automáticamente.</p>'
+    +'<p><strong>Derecho de desistimiento:</strong> conforme al art. 103.l del RDL 1/2007 (Ley General para la Defensa de los Consumidores y Usuarios), no existe derecho de desistimiento en servicios relacionados con actividades de esparcimiento con fecha específica de ejecución.</p>'
+    +'<p><strong>Cancelación por parte de la clienta:</strong> si no puedes asistir, avísanos por WhatsApp cuanto antes. El importe abonado <strong>no se reembolsa</strong>, pero podrás <strong>cambiar tu plaza a otra fecha y hora</strong> de una próxima edición del mismo taller, sujeto a disponibilidad de plazas.</p><p><strong>Cancelación por parte del centro:</strong> si el centro cancela o modifica el taller, se te ofrecerá una fecha alternativa o la devolución íntegra del importe.</p>'
+    +'<p><strong>Contacto:</strong> WhatsApp/Tel. 687 864 034.</p>'}
+};
+function openLegal(key){
+  var L=LEGAL[key]; if(!L)return;
+  var h='<div class="sheet-handle"></div>';
+  h+='<div class="sheet-head"><div class="sheet-title">'+L.t+'</div>';
+  h+='<button class="sheet-close" onclick="closeSheet()" aria-label="Cerrar">×</button></div>';
+  h+='<div class="sheet-body" style="font-size:13px;font-weight:600;color:var(--text-2);line-height:1.65;padding-bottom:18px">'+L.h+'</div>';
+  $('sheet').innerHTML=h;
+  openOvl();
+}
 
 function toast(msg){
   var t=document.createElement('div');

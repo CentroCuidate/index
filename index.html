@@ -2125,6 +2125,17 @@ button:focus-visible,[role="button"]:focus-visible,[tabindex]:focus-visible{outl
   <!-- MEJORA L: Secciones agrupadas por temática -->
   <div style="padding:14px 18px;display:flex;flex-direction:column;gap:8px">
 
+    <!-- ━━ MI JORNADA ━━ -->
+    <div class="mas-section-header">🕐 MI JORNADA</div>
+    <button class="mas-card" onclick="openJornadaModal()">
+      <div class="mas-card-icon" style="background:linear-gradient(135deg,#2ECC8E,#0F7D52)">🕐</div>
+      <div class="mas-card-info">
+        <div class="mas-card-title">Control de jornada</div>
+        <div class="mas-card-sub">Horas trabajadas · semana, mes y año · editar registros</div>
+      </div>
+      <div class="mas-card-arrow">›</div>
+    </button>
+
     <!-- ━━ SECCIÓN 1: COMUNICACIÓN ━━ -->
     <div class="mas-section-header">📲 COMUNICACIÓN CON CLIENTAS</div>
     <button class="mas-card" onclick="openConfirmationsModal()">
@@ -3535,6 +3546,7 @@ function goApp(){
   startBookingListener();
   startGcalAutoSync();
   startWorkshopsDashListener();
+  try{jorLoad();}catch(e){}
   // Sync booking slots for both sedes
   setTimeout(function(){syncBookingSlots('cc');},2000);
   setTimeout(addAriaLabels,500);
@@ -11600,6 +11612,333 @@ function animateCountUps(root){
   }catch(e){}
 }
 
+
+/* ═══════════════════════════════════════════════════════════════
+   [MÓDULO] CONTROL DE JORNADA LABORAL (solo propietaria)
+   - Fichaje entrada/salida con Face ID/huella (WebAuthn, con
+     fallback a confirmación si el dispositivo no lo soporta).
+   - NUNCA bloquea la app: es una tarjeta en el inicio.
+   - Datos: localStorage (mdc_jornada) + copia en Firebase
+     (centrocuidate/users/{uid}/jornada). Cada edición guarda
+     historial de cambios (backup).
+   ═══════════════════════════════════════════════════════════════ */
+var _jornada={active:null,days:{}};
+var _jorTimerInt=null;
+
+function jorPath(){ return (fbAuth&&fbAuth.currentUser)?('centrocuidate/users/'+fbAuth.currentUser.uid+'/jornada'):null; }
+function jorLoad(){
+  try{ var l=JSON.parse(localStorage.getItem('mdc_jornada')||'null'); if(l&&l.days)_jornada=l; }catch(e){}
+  var p=jorPath();
+  if(fbDB&&p){
+    fbDB.ref(p).once('value').then(function(s){
+      var v=s.val();
+      if(v&&v.days){
+        var nLocal=Object.keys(_jornada.days||{}).length, nCloud=Object.keys(v.days||{}).length;
+        if(nCloud>=nLocal){ _jornada=v; try{localStorage.setItem('mdc_jornada',JSON.stringify(v));}catch(e){} }
+        else jorSave();
+      } else if(Object.keys(_jornada.days||{}).length){ jorSave(); }
+      jorRefreshUI();
+    }).catch(function(){ jorRefreshUI(); });
+  } else jorRefreshUI();
+}
+function jorSave(){
+  try{localStorage.setItem('mdc_jornada',JSON.stringify(_jornada));}catch(e){}
+  var p=jorPath();
+  if(fbDB&&p){ fbDB.ref(p).set(_jornada).catch(function(){}); }
+}
+function jorNowHM(){ var d=new Date(); return String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0'); }
+function jorTodayIso(){ var d=new Date(); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); }
+function jorMins(hm){ var p=(hm||'0:0').split(':'); return (+p[0]||0)*60+(+p[1]||0); }
+function jorFmtDur(mins){ mins=Math.max(0,Math.round(mins)); var h=Math.floor(mins/60),m=mins%60; return h+' h '+String(m).padStart(2,'0')+' m'; }
+function jorDayTotal(recs){ return (recs||[]).reduce(function(a,r){ if(!r||!r.in||!r.out)return a; var d=jorMins(r.out)-jorMins(r.in); return a+(d>0?d:0); },0); }
+
+/* ── Biometría (WebAuthn) con fallback ── */
+function jorBio(motivo,cb){
+  var done=false; function ok(){ if(!done){done=true;cb();} }
+  function fallback(){
+    mdcConfirm('Confirma '+motivo+' de tu jornada.<br><span style="font-size:11px;color:var(--text3)">Tu dispositivo no ha completado Face ID/huella.</span>','Fichaje','Confirmar',ok);
+  }
+  try{
+    if(!window.PublicKeyCredential||!navigator.credentials){ fallback(); return; }
+    var credId=null; try{credId=localStorage.getItem('mdc_bio_cred');}catch(e){}
+    var chal=new Uint8Array(32); crypto.getRandomValues(chal);
+    if(credId){
+      var raw=Uint8Array.from(atob(credId),function(c){return c.charCodeAt(0);});
+      navigator.credentials.get({publicKey:{challenge:chal,timeout:30000,userVerification:'required',allowCredentials:[{id:raw.buffer,type:'public-key'}]}})
+        .then(ok).catch(fallback);
+    }else{
+      var uid=new Uint8Array(16); crypto.getRandomValues(uid);
+      navigator.credentials.create({publicKey:{
+        challenge:chal, rp:{name:'MDC Leiva'},
+        user:{id:uid.buffer,name:'maria',displayName:'María'},
+        pubKeyCredParams:[{alg:-7,type:'public-key'},{alg:-257,type:'public-key'}],
+        authenticatorSelection:{authenticatorAttachment:'platform',userVerification:'required'},
+        timeout:30000, attestation:'none'
+      }}).then(function(cred){
+        try{ localStorage.setItem('mdc_bio_cred', btoa(String.fromCharCode.apply(null,new Uint8Array(cred.rawId)))); }catch(e){}
+        ok();
+      }).catch(fallback);
+    }
+  }catch(e){ fallback(); }
+}
+
+/* ── Fichar ── */
+function jorEntrada(){
+  jorBio('la ENTRADA',function(){
+    _jornada.active={date:jorTodayIso(), in:jorNowHM(), ts:Date.now()};
+    jorSave(); jorRefreshUI();
+    showToast('🟢 Jornada iniciada a las '+_jornada.active.in);
+  });
+}
+function jorSalida(){
+  jorBio('la SALIDA',function(){
+    var a=_jornada.active; if(!a)return;
+    var d=a.date, rec={in:a.in, out:jorNowHM(), edits:[]};
+    if(!_jornada.days[d])_jornada.days[d]=[];
+    _jornada.days[d].push(rec);
+    _jornada.active=null;
+    jorSave(); jorRefreshUI();
+    showToast('🔴 Jornada finalizada · '+jorFmtDur(jorMins(rec.out)-jorMins(rec.in))+' trabajadas');
+  });
+}
+
+/* ── Tarjeta del inicio (no bloqueante) ── */
+function buildJornadaCard(){
+  var a=_jornada.active;
+  var today=jorTodayIso();
+  var out='<div style="margin:12px 18px 0">';
+  if(a && a.date!==today){
+    out+='<div style="background:rgba(232,155,27,.1);border:1.5px solid var(--gold);border-radius:var(--r-lg);padding:12px 14px;display:flex;align-items:center;gap:12px">';
+    out+='<div style="font-size:22px">⏰</div><div style="flex:1;min-width:0">';
+    out+='<div style="font-size:13px;font-weight:800;color:var(--text)">Jornada del '+a.date.split('-').reverse().join('/')+' sin cerrar</div>';
+    out+='<div style="font-size:11px;color:var(--text2);font-weight:600">Entrada '+esc(a.in)+' · indica a qué hora saliste</div></div>';
+    out+='<button onclick="jorCerrarOlvidada()" style="padding:8px 13px;border-radius:var(--r-pill);border:none;background:var(--gold);color:#fff;font-size:12px;font-weight:800;cursor:pointer;font-family:inherit">Cerrar</button>';
+    out+='</div></div>';
+    return out;
+  }
+  if(a){
+    out+='<div style="background:var(--surface);border:1.5px solid var(--green);border-radius:var(--r-lg);padding:13px 15px;box-shadow:var(--shadow-xs)">';
+    out+='<div style="display:flex;align-items:center;gap:12px">';
+    out+='<div style="flex:1;min-width:0">';
+    out+='<span style="display:inline-flex;align-items:center;gap:5px;font-size:10.5px;font-weight:800;color:var(--green-dark);background:var(--green-light);padding:3px 10px;border-radius:var(--r-pill)"><span style="width:6px;height:6px;border-radius:50%;background:var(--green);display:inline-block"></span> EN JORNADA</span>';
+    out+='<div style="font-size:24px;font-weight:900;font-variant-numeric:tabular-nums;margin-top:5px" id="jorTimer">'+jorLiveStr()+'</div>';
+    out+='<div style="font-size:11px;color:var(--text3);font-weight:600">Entrada '+esc(a.in)+' · Semana: '+jorFmtDur(jorWeekTotal())+'</div>';
+    out+='</div>';
+    out+='<button onclick="jorSalida()" style="padding:12px 16px;border-radius:var(--r);border:none;background:linear-gradient(135deg,#E86A4A,#C74B2E);color:#fff;font-size:13px;font-weight:800;cursor:pointer;font-family:inherit;box-shadow:0 4px 12px rgba(216,74,63,.3)">🔒 Finalizar<br>jornada</button>';
+    out+='</div></div>';
+  }else{
+    var hoy=jorDayTotal(_jornada.days[today]);
+    out+='<div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r-lg);padding:13px 15px;box-shadow:var(--shadow-xs);display:flex;align-items:center;gap:12px">';
+    out+='<div onclick="openJornadaModal()" style="flex:1;min-width:0;cursor:pointer">';
+    out+='<div style="font-size:13.5px;font-weight:900;color:var(--text)">🕐 Mi jornada</div>';
+    out+='<div style="font-size:11px;color:var(--text3);font-weight:600;margin-top:2px">'+(hoy>0?('Hoy: '+jorFmtDur(hoy)+' · '):'')+'Semana: '+jorFmtDur(jorWeekTotal())+' · toca para estadísticas</div>';
+    out+='</div>';
+    out+='<button onclick="jorEntrada()" style="padding:12px 16px;border-radius:var(--r);border:none;background:linear-gradient(135deg,var(--green2,#2ECC8E),var(--green));color:#fff;font-size:13px;font-weight:800;cursor:pointer;font-family:inherit;box-shadow:0 4px 12px rgba(31,170,118,.3)">🔓 Iniciar<br>jornada</button>';
+    out+='</div>';
+  }
+  out+='</div>';
+  return out;
+}
+function jorLiveStr(){
+  var a=_jornada.active; if(!a)return'';
+  var secs=Math.max(0,Math.floor((Date.now()-(a.ts||Date.now()))/1000));
+  var h=Math.floor(secs/3600),m=Math.floor((secs%3600)/60),s=secs%60;
+  return h+':'+String(m).padStart(2,'0')+':'+String(s).padStart(2,'0');
+}
+function jorRefreshUI(){
+  if(currentPage==='inicio'&&document.getElementById('dashboardContent'))renderDashboard();
+  if(_jorTimerInt)clearInterval(_jorTimerInt);
+  if(_jornada.active){
+    _jorTimerInt=setInterval(function(){
+      var el=document.getElementById('jorTimer');
+      if(el)el.textContent=jorLiveStr();
+    },1000);
+  }
+}
+function jorCerrarOlvidada(){
+  var a=_jornada.active; if(!a)return;
+  jorEditModal(a.date, -1, a.in, '', function(inHM,outHM){
+    if(!_jornada.days[a.date])_jornada.days[a.date]=[];
+    _jornada.days[a.date].push({in:inHM,out:outHM,edits:[{ts:Date.now(),nota:'cierre manual (olvido)'}]});
+    _jornada.active=null; jorSave(); jorRefreshUI();
+    showToast('✅ Jornada del '+a.date.split('-').reverse().join('/')+' cerrada');
+  });
+}
+
+/* ── Totales por periodo ── */
+function jorWeekBounds(off){
+  var d=new Date(); d.setHours(0,0,0,0);
+  var dow=(d.getDay()+6)%7; d.setDate(d.getDate()-dow+7*(off||0));
+  var a=new Date(d), b=new Date(d); b.setDate(b.getDate()+6);
+  return [a,b];
+}
+function jorIso(d){ return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); }
+function jorWeekTotal(){
+  var wb=jorWeekBounds(0), t=0;
+  for(var d=new Date(wb[0]);d<=wb[1];d.setDate(d.getDate()+1)){ t+=jorDayTotal(_jornada.days[jorIso(d)]); }
+  if(_jornada.active&&_jornada.active.date>=jorIso(wb[0])&&_jornada.active.date<=jorIso(wb[1])){
+    t+=Math.max(0,(Date.now()-(_jornada.active.ts||Date.now()))/60000);
+  }
+  return t;
+}
+
+/* ── Modal de estadísticas ── */
+var _jorTab='semana', _jorOff=0;
+function openJornadaModal(){
+  _jorTab='semana'; _jorOff=0;
+  var h='<div class="ovl" onclick="if(event.target===this)closeMod()"><div class="sheet" style="max-height:90vh;overflow-y:auto">';
+  h+='<div class="sheet-grab"></div>';
+  h+='<div style="padding:6px 20px 20px">';
+  h+='<div style="font-size:19px;font-weight:900;margin-bottom:12px">🕐 Mi jornada</div>';
+  h+='<div id="jorStatsBody"></div>';
+  h+='<button class="sbtn" type="button" onclick="closeMod()" style="width:100%;margin-top:14px">Cerrar</button>';
+  h+='</div></div></div>';
+  document.getElementById('modRoot').innerHTML=h;
+  renderJorStats();
+}
+function renderJorStats(){
+  var el=document.getElementById('jorStatsBody'); if(!el)return;
+  var tabs=[['semana','Semana'],['mes','Mes'],['año','Año']];
+  var h='<div style="display:flex;gap:6px;margin-bottom:12px">';
+  tabs.forEach(function(t){
+    var on=_jorTab===t[0];
+    h+='<button onclick="_jorTab=\''+t[0]+'\';_jorOff=0;renderJorStats()" style="flex:1;padding:8px;border-radius:var(--r);border:1.5px solid '+(on?'var(--green)':'var(--border)')+';background:'+(on?'var(--green)':'var(--surface)')+';color:'+(on?'#fff':'var(--text2)')+';font-size:12.5px;font-weight:800;cursor:pointer;font-family:inherit">'+t[1]+'</button>';
+  });
+  h+='</div>';
+
+  var labels=[],vals=[],title='',entriesHtml='',total=0,ndays=0;
+  var dias=['L','M','X','J','V','S','D'];
+  var meses=['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic'];
+  var MESL=['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
+
+  if(_jorTab==='semana'){
+    var wb=jorWeekBounds(_jorOff);
+    title=wb[0].getDate()+' '+meses[wb[0].getMonth()]+' – '+wb[1].getDate()+' '+meses[wb[1].getMonth()];
+    var i=0;
+    for(var d=new Date(wb[0]);d<=wb[1];d.setDate(d.getDate()+1),i++){
+      var iso=jorIso(d), m=jorDayTotal(_jornada.days[iso]);
+      labels.push(dias[i]); vals.push(m); total+=m; if(m>0)ndays++;
+    }
+  }else if(_jorTab==='mes'){
+    var base=new Date(); base.setDate(1); base.setMonth(base.getMonth()+_jorOff);
+    var y=base.getFullYear(), mo=base.getMonth();
+    title=MESL[mo]+' '+y;
+    var dIn=new Date(y,mo+1,0).getDate();
+    for(var dd=1;dd<=dIn;dd++){
+      var iso2=y+'-'+String(mo+1).padStart(2,'0')+'-'+String(dd).padStart(2,'0');
+      var m2=jorDayTotal(_jornada.days[iso2]);
+      labels.push(dd%5===0||dd===1?String(dd):''); vals.push(m2); total+=m2; if(m2>0)ndays++;
+    }
+  }else{
+    var yy=new Date().getFullYear()+_jorOff;
+    title=String(yy);
+    for(var mm=0;mm<12;mm++){
+      var mt=0;
+      Object.keys(_jornada.days).forEach(function(k){
+        if(k.slice(0,4)==+yy+''&&(+k.slice(5,7)-1)===mm)mt+=jorDayTotal(_jornada.days[k]);
+      });
+      labels.push(meses[mm]); vals.push(mt); total+=mt; if(mt>0)ndays++;
+    }
+  }
+
+  h+='<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">';
+  h+='<button onclick="_jorOff--;renderJorStats()" style="width:30px;height:30px;border-radius:10px;border:1px solid var(--border);background:var(--surface2);font-weight:900;cursor:pointer">‹</button>';
+  h+='<div style="text-align:center"><div style="font-size:20px;font-weight:900">'+jorFmtDur(total)+'</div><div style="font-size:11px;color:var(--text3);font-weight:700">'+title+(ndays?(' · media '+jorFmtDur(total/ndays)+'/día'):'')+'</div></div>';
+  h+='<button onclick="_jorOff++;renderJorStats()" '+(_jorOff>=0?'disabled style="opacity:.35;':'style="')+'width:30px;height:30px;border-radius:10px;border:1px solid var(--border);background:var(--surface2);font-weight:900;cursor:pointer">›</button>';
+  h+='</div>';
+
+  var mx=Math.max.apply(null,vals.concat([1]));
+  h+='<div style="display:flex;align-items:flex-end;gap:'+(vals.length>15?'1px':'4px')+';height:90px;margin:12px 0 4px">';
+  vals.forEach(function(v){
+    var pct=Math.round(v/mx*100);
+    h+='<div style="flex:1;display:flex;flex-direction:column;justify-content:flex-end;height:100%"><div style="height:'+Math.max(pct,2)+'%;border-radius:3px 3px 0 0;background:'+(v>0?'linear-gradient(180deg,var(--green2,#2ECC8E),var(--green))':'var(--surface2)')+'"></div></div>';
+  });
+  h+='</div>';
+  h+='<div style="display:flex;gap:'+(vals.length>15?'1px':'4px')+'">';
+  labels.forEach(function(l){ h+='<div style="flex:1;text-align:center;font-size:8.5px;font-weight:700;color:var(--text3)">'+l+'</div>'; });
+  h+='</div>';
+
+  // Registros del periodo (para editar) — solo semana y mes
+  if(_jorTab!=='año'){
+    var keys=Object.keys(_jornada.days).filter(function(k){
+      if(_jorTab==='semana'){ var wb2=jorWeekBounds(_jorOff); return k>=jorIso(wb2[0])&&k<=jorIso(wb2[1]); }
+      var b2=new Date(); b2.setDate(1); b2.setMonth(b2.getMonth()+_jorOff);
+      return k.slice(0,7)===(b2.getFullYear()+'-'+String(b2.getMonth()+1).padStart(2,'0'));
+    }).sort().reverse();
+    h+='<div style="border-top:1px solid var(--border);margin-top:14px;padding-top:10px">';
+    h+='<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">';
+    h+='<span style="font-size:11px;font-weight:800;color:var(--text3);text-transform:uppercase;letter-spacing:.05em">Registros</span>';
+    h+='<button onclick="jorAddManual()" style="padding:4px 10px;border-radius:var(--r-pill);border:1.5px solid var(--green);background:var(--green-light);color:var(--green-dark);font-size:11px;font-weight:800;cursor:pointer;font-family:inherit">+ Añadir</button>';
+    h+='</div>';
+    if(!keys.length)h+='<div style="font-size:12px;color:var(--text3);font-weight:600;text-align:center;padding:12px 0">Sin registros en este periodo</div>';
+    keys.forEach(function(k){
+      (_jornada.days[k]||[]).forEach(function(r,idx){
+        var dd2=new Date(k+'T00:00:00');
+        var dl=['dom','lun','mar','mié','jue','vie','sáb'][dd2.getDay()]+' '+dd2.getDate();
+        h+='<div style="display:flex;justify-content:space-between;align-items:center;padding:7px 0;border-bottom:1px dashed var(--border);font-size:12.5px;font-weight:700">';
+        h+='<span>'+dl+' · '+esc(r.in||'?')+'–'+esc(r.out||'?')+((r.edits&&r.edits.length)?' <span title="editado" style="font-size:10px">✏️</span>':'')+'</span>';
+        h+='<span style="color:var(--text2)">'+jorFmtDur(jorDayTotal([r]))+' <button onclick="jorEdit(\''+k+'\','+idx+')" style="border:none;background:none;cursor:pointer;font-size:13px">✏️</button></span>';
+        h+='</div>';
+      });
+    });
+    h+='</div>';
+  }
+  el.innerHTML=h;
+}
+
+/* ── Editar / añadir registro (backup con historial) ── */
+function jorEditModal(dateIso, idx, inHM, outHM, onSave){
+  var isNew=idx<0&&!inHM;
+  var h='<div class="ovl" onclick="if(event.target===this)closeMod()"><div class="sheet">';
+  h+='<div class="sheet-grab"></div><div style="padding:6px 20px 20px">';
+  h+='<div style="font-size:17px;font-weight:900;margin-bottom:12px">'+(idx>=0?'✏️ Editar registro':'➕ '+(inHM?'Cerrar jornada':'Añadir registro'))+'</div>';
+  h+='<div class="bk-field"><span class="sh-lbl">📅 Fecha</span><input id="jeDate" class="fld" type="date" value="'+esc(dateIso||jorTodayIso())+'" '+(idx>=0||inHM?'disabled':'')+'></div>';
+  h+='<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">';
+  h+='<div class="bk-field"><span class="sh-lbl">🔓 Entrada</span><input id="jeIn" class="fld" type="time" value="'+esc(inHM||'09:00')+'"></div>';
+  h+='<div class="bk-field"><span class="sh-lbl">🔒 Salida</span><input id="jeOut" class="fld" type="time" value="'+esc(outHM||'')+'"></div>';
+  h+='</div>';
+  h+='<div style="display:flex;gap:8px;margin-top:14px">';
+  if(idx>=0)h+='<button class="sbtn" style="color:var(--red);border-color:var(--red)" onclick="jorDelete(\''+dateIso+'\','+idx+')">🗑️</button>';
+  h+='<button class="sbtn" style="flex:1" onclick="closeMod();openJornadaModal&&openJornadaModal()">Cancelar</button>';
+  h+='<button class="sbtn pri" style="flex:2" id="jeSaveBtn">Guardar</button>';
+  h+='</div></div></div></div>';
+  document.getElementById('modRoot').innerHTML=h;
+  document.getElementById('jeSaveBtn').onclick=function(){
+    var dIso=document.getElementById('jeDate').value;
+    var i2=document.getElementById('jeIn').value, o2=document.getElementById('jeOut').value;
+    if(!dIso||!i2||!o2){showToast('Completa fecha, entrada y salida');return;}
+    if(jorMins(o2)<=jorMins(i2)){showToast('⚠️ La salida debe ser posterior a la entrada');return;}
+    onSave(i2,o2,dIso);
+  };
+}
+function jorEdit(dateIso, idx){
+  var r=(_jornada.days[dateIso]||[])[idx]; if(!r)return;
+  jorEditModal(dateIso, idx, r.in, r.out, function(i2,o2){
+    if(!r.edits)r.edits=[];
+    r.edits.push({ts:Date.now(),antes:{in:r.in,out:r.out},despues:{in:i2,out:o2}});
+    r.in=i2; r.out=o2;
+    jorSave(); closeMod(); openJornadaModal(); jorRefreshUI();
+    showToast('✅ Registro actualizado (cambio guardado en el historial)');
+  });
+}
+function jorDelete(dateIso, idx){
+  mdcConfirm('¿Eliminar este registro de jornada?<br><span style="font-size:11px;color:var(--text3)">Esta acción no se puede deshacer.</span>','Eliminar registro','Sí, eliminar',function(){
+    var arr=_jornada.days[dateIso]||[];
+    arr.splice(idx,1);
+    if(!arr.length)delete _jornada.days[dateIso];
+    jorSave(); closeMod(); openJornadaModal(); jorRefreshUI();
+    showToast('🗑️ Registro eliminado');
+  });
+}
+function jorAddManual(){
+  jorEditModal('', -1, '', '', function(i2,o2,dIso){
+    if(!_jornada.days[dIso])_jornada.days[dIso]=[];
+    _jornada.days[dIso].push({in:i2,out:o2,edits:[{ts:Date.now(),nota:'añadido manualmente'}]});
+    jorSave(); closeMod(); openJornadaModal(); jorRefreshUI();
+    showToast('✅ Registro añadido');
+  });
+}
+
 function buildWorkshopsDashSection(){
   // Talleres futuros (desde _workshopsCache que ya escucha Firebase)
   var cache=(typeof _workshopsCache!=='undefined'&&_workshopsCache)?_workshopsCache:{};
@@ -11724,6 +12063,7 @@ function renderDashboard(){
 
   // Hero section
   var out=renderDashboardHero();
+  out+=buildJornadaCard();
 
   // Cumpleaños próximos 7 días
   var bdayAlerts=[];

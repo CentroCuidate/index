@@ -5496,7 +5496,10 @@ function onStockSearch(){
 function stOf(p){if(p.isService||p.cat==='servicios')return'svc';return p.stock===0?'out':p.stock<=(p.minStock||data.globalMin)?'low':'ok';}
 function fmt(n){return(+(n||0)).toFixed(2).replace('.',',')+'\u20ac';}
 function fdate(iso){if(!iso)return'';var d=new Date(iso+'T00:00:00');return d.getDate()+'/'+(d.getMonth()+1)+'/'+d.getFullYear();}
-function esc(s){return(s||'').replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;');}
+function esc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/'/g,'&#39;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+/* SEGURIDAD: los ids/claves que llegan de la reserva pública se insertan en
+   atributos onclick. Solo se aceptan los que tienen un formato seguro. */
+function _safeKey(k){return typeof k==='string'&&/^[A-Za-z0-9_\-]{1,80}$/.test(k);}
 
 /* ── VALIDACIÓN DE TELÉFONO ──────────────────────────────────────
    Antes se aceptaba cualquier texto (p.ej. "abc123"), lo que rompía
@@ -19273,7 +19276,7 @@ function loadWorkshops(){
 
 function renderWorkshopsList(){
   var el=document.getElementById('workshopsList');if(!el)return;
-  var list=Object.keys(_workshopsCache).map(function(id){
+  var list=Object.keys(_workshopsCache).filter(_safeKey).map(function(id){
     var w=_workshopsCache[id];return {id:id,data:w};
   });
   // Ordenar por fecha+hora DESC (próximos arriba), pasados al final
@@ -19338,7 +19341,7 @@ function renderWorkshopsList(){
     if(w.note)html+='<div style="font-size:11.5px;color:var(--text3);font-weight:500;margin-bottom:10px;font-style:italic">📝 '+esc(w.note)+'</div>';
     // Lista mini de inscritas
     if(attCount>0){
-      var attArr=Object.keys(attendees).map(function(k){return Object.assign({_key:k},attendees[k]);});
+      var attArr=Object.keys(attendees).filter(_safeKey).map(function(k){return Object.assign({},attendees[k],{_key:k});});
       attArr.sort(function(a,b){return(a.createdAt||'')<(b.createdAt||'')?-1:1;});
       html+='<div style="background:var(--surface2);border-radius:10px;padding:8px 10px;margin-bottom:10px">';
       attArr.forEach(function(a,idx){
@@ -19356,7 +19359,7 @@ function renderWorkshopsList(){
         if(isPend){
           html+='<button onclick="event.stopPropagation();confirmWorkshopPayment(\''+item.id+'\',\''+a._key+'\')" style="flex-shrink:0;padding:4px 10px;border-radius:99px;border:none;background:linear-gradient(135deg,var(--green2,#2ECC8E),var(--green));color:#fff;font-size:10.5px;font-weight:800;cursor:pointer;font-family:inherit" title="Confirmar el pago de esta reserva">✓ Cobrado</button>';
         }
-        html+='<button onclick="event.stopPropagation();removeWorkshopAttendee(\''+item.id+'\',\''+a._key+'\',\''+esc(a.name||'').replace(/'/g,"\\'")+'\')" style="background:transparent;border:none;color:var(--red);font-size:13px;cursor:pointer;padding:2px 4px;flex-shrink:0" aria-label="Quitar inscrita">×</button>';
+        html+='<button onclick="event.stopPropagation();removeWorkshopAttendee(\''+item.id+'\',\''+a._key+'\',\''+esc(String(a.name||'').replace(/[\\'\r\n]/g,' '))+'\')" style="background:transparent;border:none;color:var(--red);font-size:13px;cursor:pointer;padding:2px 4px;flex-shrink:0" aria-label="Quitar inscrita">×</button>';
         html+='</div>';
       });
       html+='</div>';
@@ -19864,6 +19867,12 @@ function renderBookingReqList(all){
   var el=document.getElementById('bookingReqList');if(!el)return;
   // Populate global cache for direct access from buttons
   _bkReqs={};
+  // SEGURIDAD: descartar solicitudes con id manipulado y normalizar campos públicos
+  all=(all||[]).filter(function(r){return r&&_safeKey(r.id);});
+  all.forEach(function(r){
+    if(r.dur!=null)r.dur=parseInt(r.dur,10)||0;
+    if(r._sid!=null&&!_safeKey(String(r._sid)))r._sid='cc';
+  });
   all.forEach(function(r){_bkReqs[r.id]=r;});
   // MEJORA G: solo mostrar pendientes. Aprobadas/rechazadas se borran
   // automáticamente de Firebase tras procesarse — no se acumula histórico.

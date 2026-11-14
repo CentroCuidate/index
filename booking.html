@@ -612,6 +612,10 @@ function showPayScreen(req){
 /* (Compatibilidad) Si algún día se configura un retorno con ?paid=1, lo
    aceptamos y confirmamos; si no, no hace nada. */
 (function handlePaymentReturn(){
+  /* SEGURIDAD: desactivado. Cualquiera podía añadir ?paid=1 a la dirección y
+     marcar su reserva como pagada sin pagar. El pago lo confirma el centro
+     desde su app. */
+  return;
   var params=new URLSearchParams(location.search);
   if(params.get('paid')!=='1')return;
   var pend=null;

@@ -3202,6 +3202,7 @@ async function loadUserConfig(uid){
         try{localStorage.setItem('ccuida_anthropic_key',cfg.anthropicKey);}catch(e){}
       });
     }
+    if(cfg&&typeof cfg.gcalKey==='string'&&cfg.gcalKey){setGcalKey(cfg.gcalKey);}
     if(cfg&&cfg.gcalUrl&&cfg.gcalUrl.length>20){
       setGcalUrl(cfg.gcalUrl);
       // Start auto-sync now that we have the URL
@@ -20515,6 +20516,19 @@ var GCAL_URL = (function(){
   try{ return localStorage.getItem('ccuida_gcal_url')||''; }catch(e){return '';}
 })();
 
+/* SEGURIDAD: clave secreta compartida con el Apps Script (v2.3+). Sin ella el
+   script no deja leer ni modificar el calendario. Se guarda en este dispositivo
+   y en la configuración privada de la usuaria, nunca en la zona pública. */
+var GCAL_KEY = (function(){
+  try{ return localStorage.getItem('ccuida_gcal_key')||''; }catch(e){return '';}
+})();
+function setGcalKey(k){
+  GCAL_KEY = (k||'').trim();
+  try{localStorage.setItem('ccuida_gcal_key', GCAL_KEY);}catch(e){}
+}
+function gcalKeyParam(){ return GCAL_KEY ? '&key='+encodeURIComponent(GCAL_KEY) : ''; }
+function gcalBody(o){ if(GCAL_KEY)o.key=GCAL_KEY; return JSON.stringify(o); }
+
 var _gcalEvents = [];       // events fetched from GCal
 var _gcalTaken  = {};       // "YYYY-MM-DD_HH:MM" → true (from GCal)
 var _gcalSyncing = false;
@@ -20523,11 +20537,11 @@ var _gcalLastSync = 0;
 function setGcalUrl(url){
   GCAL_URL = (url||'').trim();
   try{localStorage.setItem('ccuida_gcal_url', GCAL_URL);}catch(e){}
-  // FASE 4: guardar también en la config de Firebase para que booking.html
-  // pueda avisar al Apps Script cuando entra un pago (crear evento + WhatsApp).
+  // SEGURIDAD: la URL del script ya NO se publica en la config pública de
+  // reservas (cualquiera podía leerla). Si quedó alguna copia, se elimina.
   try{
-    if(fbDB && fbAuth && fbAuth.currentUser && GCAL_URL.length>20){
-      fbDB.ref('centrocuidate/booking/cc/config/gcalUrl').set(GCAL_URL).catch(function(){});
+    if(fbDB && fbAuth && fbAuth.currentUser){
+      fbDB.ref('centrocuidate/booking/cc/config/gcalUrl').remove().catch(function(){});
     }
   }catch(e){}
 }
@@ -20538,7 +20552,7 @@ function isGcalConnected(){ return GCAL_URL.length > 20; }
 async function gcalFetchSlots(cb){
   if(!isGcalConnected()){ if(cb)cb({}); return; }
   try{
-    var r=await fetch(GCAL_URL+'?action=slots');
+    var r=await fetch(GCAL_URL+'?action=slots'+gcalKeyParam());
     var d=await r.json();
     _gcalTaken=d.taken||{};
     _gcalLastSync=Date.now();
@@ -20558,7 +20572,7 @@ async function gcalFetchEvents(fromStr, toStr, cb){
   var timer=ctrl?setTimeout(function(){ctrl.abort();},25000):null;
   try{
     var opts=ctrl?{signal:ctrl.signal}:{};
-    var r=await fetch(GCAL_URL+'?action=events&from='+fromStr+'&to='+toStr,opts);
+    var r=await fetch(GCAL_URL+'?action=events&from='+fromStr+'&to='+toStr+gcalKeyParam(),opts);
     if(timer)clearTimeout(timer);
     var d=await r.json();
     _gcalEvents=d.events||[];
@@ -20642,7 +20656,7 @@ async function gcalCreateEvent(appt, cb){
       var r = await fetchWithTimeout(GCAL_URL, {
         method:'POST',
         headers:{'Content-Type':'text/plain;charset=utf-8'},
-        body:JSON.stringify(body),
+        body:gcalBody(body),
         redirect:'follow'
       }, 12000); // 12s timeout
       if(!r.ok){
@@ -20708,7 +20722,7 @@ async function gcalDeleteEvent(gcalId, cb){
     await fetch(GCAL_URL,{
       method:'POST',
       headers:{'Content-Type':'text/plain;charset=utf-8'},
-      body:JSON.stringify({action:'delete',gcalId:gcalId}),
+      body:gcalBody({action:'delete',gcalId:gcalId}),
       redirect:'follow'
     });
     if(cb)cb();
@@ -20869,6 +20883,16 @@ function openGcalSettingsModal(){
   h += '<div style="font-size:11px;color:var(--text3);font-weight:500;margin-top:6px">Empieza por https://script.google.com/macros/s/</div>';
   h += '</div>';
 
+  // Clave secreta (Apps Script v2.3+)
+  h += '<div style="margin-bottom:14px">';
+  h += '<span class="sh-lbl" style="font-size:11px;font-weight:800;color:var(--text3);text-transform:uppercase;letter-spacing:.1em;display:block;margin-bottom:7px">Clave secreta del script</span>';
+  h += '<input id="gcalKeyInput" class="fld" type="password" autocomplete="off" autocapitalize="off" spellcheck="false"'
+    +' placeholder="La misma que pusiste en SECRET_KEY"'
+    +' value="'+esc(GCAL_KEY)+'"'
+    +' style="font-size:12px;font-family:monospace">';
+  h += '<div style="font-size:11px;color:var(--text3);font-weight:500;margin-top:6px">Protege tu calendario: sin esta clave nadie puede leerlo ni modificarlo.</div>';
+  h += '</div>';
+
   // Botón probar conexión (siempre visible si hay URL)
   h += '<button onclick="testGcalConnection()" id="gcalTestBtn"'
     +' style="width:100%;padding:11px;border-radius:var(--r-sm);border:1.5px solid var(--border2);'
@@ -20893,10 +20917,12 @@ function openGcalSettingsModal(){
 
 function saveGcalUrl(){
   var url = ((document.getElementById('gcalUrlInput')||{}).value||'').trim();
+  var gkey = ((document.getElementById('gcalKeyInput')||{}).value||'').trim();
+  setGcalKey(gkey);
   setGcalUrl(url);
   // Persist to Firebase config so it survives across devices
   if(fbAuth&&fbAuth.currentUser){
-    fbSaveConfig({gcalUrl: url});
+    fbSaveConfig({gcalUrl: url, gcalKey: gkey});
   }
   closeMod();
   if(isGcalConnected()){
@@ -20922,6 +20948,9 @@ function testGcalConnection(){
   // Use the URL currently in the input (even before saving)
   var inputUrl=((document.getElementById('gcalUrlInput')||{}).value||'').trim();
   var urlToTest=inputUrl||GCAL_URL;
+  var _kEl=document.getElementById('gcalKeyInput');
+  var keyToTest=((_kEl?_kEl.value:GCAL_KEY)||'').trim();
+  var _kq=keyToTest?'&key='+encodeURIComponent(keyToTest):'';
   if(!urlToTest||urlToTest.length<20){
     if(res)res.innerHTML='<span style="color:var(--amber)">⚠️ Primero pega la URL del Apps Script</span>';
     return;
@@ -20946,7 +20975,7 @@ function testGcalConnection(){
   fetch(urlToTest+'?action=ping',{mode:'no-cors'})
     .then(function(){
       // If no-cors worked, try with cors
-      return fetch(urlToTest+'?action=ping');
+      return fetch(urlToTest+'?action=ping'+_kq);
     })
     .then(function(r){
       clearTimeout(_gcalTimeout);
@@ -20955,7 +20984,7 @@ function testGcalConnection(){
     .then(function(d){
       if(btn)btn.textContent='\uD83D\uDD0D Probar conexi\u00f3n';
       if(res)res.innerHTML=d.ok
-        ?'<span style="color:var(--green)">\u2705 Conexi\u00f3n correcta \u00b7 '+esc(d.ts||'')+'</span>'
+        ?'<span style="color:var(--green)">\u2705 Conexi\u00f3n correcta \u00b7 '+esc(d.ts||'')+'</span>'+(d.auth===true?' <span style="color:var(--green)">\u00b7 clave correcta</span>':d.auth===false?'<br><span style="color:var(--red)">\u274C La clave secreta no coincide con la del script</span>':'')
         :'<span style="color:var(--red)">\u274C Error: '+esc(d.error||'respuesta inesperada')+'</span>';
     })
     .catch(function(e){

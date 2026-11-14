@@ -11506,6 +11506,7 @@ function startWorkshopsDashListener(){
       var v=s.val()||{};
       _workshopsCache=v;
       try{localStorage.setItem('mdc_workshops_backup', JSON.stringify(v));}catch(e){}
+      try{startAttPrivListener();_migrateAttPII();}catch(e){}
       try{cleanExpiredWorkshopHolds();}catch(e){}
       if(document.getElementById('workshopsList'))renderWorkshopsList();
       if(currentPage==='inicio'&&document.getElementById('dashboardContent'))renderDashboard();
@@ -11533,6 +11534,7 @@ function cleanExpiredWorkshopHolds(){
       released++;
       delete w.attendees[ak];
       fbDB.ref(workshopsPath()+'/'+wid+'/attendees/'+ak).remove().catch(function(){});
+      _attPrivRemove(wid,ak);
       var reqId=a.requestId||ak;
       fbDB.ref('centrocuidate/booking/cc/requests/'+reqId+'/status').set('expired').catch(function(){});
     });
@@ -19110,6 +19112,107 @@ var _workshopsListener=null;
    Si las reglas están bien, todo funciona automáticamente sin workarounds. */
 function workshopsPath(){return 'centrocuidate/booking/cc/workshops';}
 
+/* ─── PRIVACIDAD DE INSCRITAS ────────────────────────────────────
+   El nodo de talleres es de lectura pública (lo necesita la web de
+   reservas), así que nombre, teléfono y nota de cada inscrita se
+   guardan aparte, en una zona que sólo puede leer la propietaria:
+     centrocuidate/booking/cc/attendeesPrivate/{tallerId}/{inscritaId}
+   En el taller público sólo quedan estado, fechas y pago. */
+var ATT_PII=['name','phone','note'];
+var _attPriv={};
+var _attPrivListener=null;
+var _attPrivLoaded=false;
+var _attMigrating={};
+function attPrivPath(wid,aid){return 'centrocuidate/booking/cc/attendeesPrivate'+(wid?'/'+wid:'')+(aid?'/'+aid:'');}
+function _attFull(wid,aid,a){
+  var p=(_attPriv[wid]||{})[aid]||{};
+  var o=Object.assign({},a||{});
+  ATT_PII.forEach(function(k){if(p[k]!=null&&p[k]!=='')o[k]=p[k];});
+  return o;
+}
+function _attPublic(a){
+  var o={};
+  Object.keys(a||{}).forEach(function(k){if(ATT_PII.indexOf(k)<0&&k!=='_key')o[k]=a[k];});
+  return o;
+}
+function _attPrivate(a){
+  var o={};
+  ATT_PII.forEach(function(k){if(a&&a[k]!=null&&a[k]!=='')o[k]=String(a[k]);});
+  return o;
+}
+function _attPrivBackup(){try{localStorage.setItem('mdc_attpriv_backup',JSON.stringify(_attPriv));}catch(e){}}
+function _attPrivWrite(wid,aid,priv){
+  var path=attPrivPath(wid,aid);
+  return fbRestSet(path,priv).catch(function(eRest){
+    if(!fbDB)throw eRest;
+    return fbDB.ref(path).set(priv);
+  });
+}
+function _attPrivRemove(wid,aid){
+  try{
+    if(aid){if(_attPriv[wid])delete _attPriv[wid][aid];}else{delete _attPriv[wid];}
+    _attPrivBackup();
+    var path=attPrivPath(wid,aid);
+    fbRestDelete(path).catch(function(){try{if(fbDB)fbDB.ref(path).remove().catch(function(){});}catch(e){}});
+  }catch(e){}
+}
+function startAttPrivListener(){
+  if(!fbDB||!fbAuth||!fbAuth.currentUser||_attPrivListener)return;
+  try{
+    var b=JSON.parse(localStorage.getItem('mdc_attpriv_backup')||'{}');
+    if(b&&typeof b==='object'&&!Object.keys(_attPriv).length)_attPriv=b;
+  }catch(e){}
+  try{
+    _attPrivListener=fbDB.ref(attPrivPath()).on('value',function(s){
+      _attPriv=s.val()||{};
+      _attPrivLoaded=true;
+      _attPrivBackup();
+      try{_migrateAttPII();}catch(e){}
+      if(document.getElementById('workshopsList'))renderWorkshopsList();
+    },function(err){
+      _attPrivListener=null;
+      console.warn('[attPriv] sin acceso a la zona privada:',err&&err.message);
+    });
+  }catch(e){_attPrivListener=null;}
+}
+/* Migración: mueve a la zona privada los datos personales que aún estén
+   en el taller público y los borra de ahí. Sólo borra del público cuando
+   la copia privada se ha guardado correctamente. */
+function _migrateAttPII(){
+  if(!_attPrivLoaded||!fbDB||!fbAuth||!fbAuth.currentUser)return;
+  var cache=_workshopsCache||{};
+  Object.keys(cache).forEach(function(wid){
+    if(!_safeKey(wid))return;
+    var att=(cache[wid]||{}).attendees||{};
+    Object.keys(att).forEach(function(aid){
+      var a=att[aid]; if(!a||typeof a!=='object'||!_safeKey(aid))return;
+      var legacy=_attPrivate(a);
+      if(!Object.keys(legacy).length)return;
+      var tag=wid+'/'+aid;
+      if(_attMigrating[tag])return;
+      _attMigrating[tag]=true;
+      var merged=Object.assign({},legacy,(_attPriv[wid]||{})[aid]||{});
+      _attPrivWrite(wid,aid,merged).then(function(){
+        if(!_attPriv[wid])_attPriv[wid]={};
+        _attPriv[wid][aid]=merged;
+        _attPrivBackup();
+        var base=workshopsPath()+'/'+wid+'/attendees/'+aid+'/';
+        return Promise.all(ATT_PII.map(function(k){
+          if(a[k]==null)return null;
+          return fbRestDelete(base+k).catch(function(){return fbDB.ref(base+k).remove();});
+        }));
+      }).then(function(){
+        ATT_PII.forEach(function(k){delete a[k];});
+        delete _attMigrating[tag];
+        try{localStorage.setItem('mdc_workshops_backup',JSON.stringify(_workshopsCache));}catch(e){}
+      }).catch(function(e){
+        delete _attMigrating[tag];
+        console.warn('[attPriv] migración pendiente',tag,e&&e.message);
+      });
+    });
+  });
+}
+
 /* ─── Firebase REST helpers (fallback cuando el websocket no responde) ───
    Cuando el SDK web se cuelga por websocket bloqueado, podemos usar la
    API REST por HTTPS normal — es más lenta para tiempo real pero
@@ -19207,6 +19310,7 @@ function loadWorkshops(){
     return;
   }
   dlog('[loadWorkshops] iniciando carga…');
+  try{startAttPrivListener();}catch(e){}
 
   // PASO 0: cargar respaldo localStorage al instante (mientras llega Firebase)
   // Esto evita pantallas vacías si Firebase tarda en responder.
@@ -19228,6 +19332,7 @@ function loadWorkshops(){
     _workshopsCache=val;
     // Sincronizar el respaldo local con lo que tiene Firebase
     try{localStorage.setItem('mdc_workshops_backup', JSON.stringify(val));}catch(e){}
+    try{startAttPrivListener();_migrateAttPII();}catch(e){}
     renderWorkshopsList();
     // Listener SDK para tiempo real (puede fallar si websocket roto, no pasa nada)
     if(source==='SDK' && !_workshopsListener && !_wsDashListener){
@@ -19236,6 +19341,7 @@ function loadWorkshops(){
           var v=s.val()||{};
           _workshopsCache=v;
           try{localStorage.setItem('mdc_workshops_backup', JSON.stringify(v));}catch(e){}
+          try{_migrateAttPII();}catch(e){}
           if(document.getElementById('workshopsList'))renderWorkshopsList();
         });
       }catch(e){}
@@ -19341,7 +19447,7 @@ function renderWorkshopsList(){
     if(w.note)html+='<div style="font-size:11.5px;color:var(--text3);font-weight:500;margin-bottom:10px;font-style:italic">📝 '+esc(w.note)+'</div>';
     // Lista mini de inscritas
     if(attCount>0){
-      var attArr=Object.keys(attendees).filter(_safeKey).map(function(k){return Object.assign({},attendees[k],{_key:k});});
+      var attArr=Object.keys(attendees).filter(_safeKey).map(function(k){return Object.assign(_attFull(item.id,k,attendees[k]),{_key:k});});
       attArr.sort(function(a,b){return(a.createdAt||'')<(b.createdAt||'')?-1:1;});
       html+='<div style="background:var(--surface2);border-radius:10px;padding:8px 10px;margin-bottom:10px">';
       attArr.forEach(function(a,idx){
@@ -19592,10 +19698,12 @@ function deleteWorkshop(workshopId){
     }
     // REST primero, SDK como fallback
     fbRestDelete(workshopsPath()+'/'+workshopId).then(function(){
+      _attPrivRemove(workshopId);
       onDeleteResult(true);
     }).catch(function(eRest){
       try{
         fbDB.ref(workshopsPath()+'/'+workshopId).remove().then(function(){
+          _attPrivRemove(workshopId);
           onDeleteResult(true);
         }).catch(function(eSDK){
           onDeleteResult(false, eRest||eSDK);
@@ -19662,9 +19770,14 @@ function saveWorkshopAttendee(workshopId){
     addedByOwner:true,
     createdAt:new Date().toISOString()
   };
+  // PRIVACIDAD: nombre y teléfono van a la zona privada; al taller público
+  // sólo va el estado. Si la zona privada no está disponible, formato anterior.
+  var attPub=_attPublic(attendee), attPrv=_attPrivate(attendee);
   // Actualizar cache local primero (optimistic)
   if(!_workshopsCache[workshopId].attendees)_workshopsCache[workshopId].attendees={};
-  _workshopsCache[workshopId].attendees[attId]=attendee;
+  _workshopsCache[workshopId].attendees[attId]=attPub;
+  if(!_attPriv[workshopId])_attPriv[workshopId]={};
+  _attPriv[workshopId][attId]=attPrv;
 
   var saved=false;
   function onResult(ok, err){
@@ -19679,16 +19792,22 @@ function saveWorkshopAttendee(workshopId){
       showToast('⚠️ '+m.slice(0,60),5000);
       // Revertir cache
       delete _workshopsCache[workshopId].attendees[attId];
+      if(_attPriv[workshopId])delete _attPriv[workshopId][attId];
     }
   }
-  fbRestSet(workshopsPath()+'/'+workshopId+'/attendees/'+attId, attendee).then(function(){
-    onResult(true);
-  }).catch(function(eRest){
-    try{
-      fbDB.ref(workshopsPath()+'/'+workshopId+'/attendees/'+attId).set(attendee).then(function(){
-        onResult(true);
-      }).catch(function(eSDK){onResult(false, eRest||eSDK);});
-    }catch(e){onResult(false, eRest);}
+  _attPrivWrite(workshopId,attId,attPrv).then(function(){_attPrivBackup();return attPub;},function(){
+    _workshopsCache[workshopId].attendees[attId]=attendee;
+    return attendee;
+  }).then(function(toWrite){
+    fbRestSet(workshopsPath()+'/'+workshopId+'/attendees/'+attId, toWrite).then(function(){
+      onResult(true);
+    }).catch(function(eRest){
+      try{
+        fbDB.ref(workshopsPath()+'/'+workshopId+'/attendees/'+attId).set(toWrite).then(function(){
+          onResult(true);
+        }).catch(function(eSDK){onResult(false, eRest||eSDK);});
+      }catch(e){onResult(false, eRest);}
+    });
   });
   setTimeout(function(){onResult(false, new Error('Sin respuesta tras 8s'));},8000);
 }
@@ -19702,15 +19821,21 @@ function confirmWorkshopPayment(workshopId, attendeeKey){
   var w=_workshopsCache[workshopId];
   if(!w||!w.attendees||!w.attendees[attendeeKey]){ showToast('No encuentro la reserva'); return; }
   var a=w.attendees[attendeeKey];
+  var af=_attFull(workshopId,attendeeKey,a);
   var wsName=w.name||'Taller Skin Care';
-  mdcConfirm('¿Confirmar el pago de <strong>'+esc(a.name||'?')+'</strong>?<br><span style="font-size:11px;color:var(--text3)">Se creará el evento en tu Google Calendar.</span>','Confirmar pago','✓ Sí, cobrado',function(){
+  mdcConfirm('¿Confirmar el pago de <strong>'+esc(af.name||'?')+'</strong>?<br><span style="font-size:11px;color:var(--text3)">Se creará el evento en tu Google Calendar.</span>','Confirmar pago','✓ Sí, cobrado',function(){
     // Optimistic
     a.paid=true; a.status='confirmed'; a.paidAt=new Date().toISOString();
     renderWorkshopsList();
 
     // 1) Guardar la inscripción pagada en Firebase
-    fbRestSet(workshopsPath()+'/'+workshopId+'/attendees/'+attendeeKey, a).catch(function(){
-      try{ if(fbDB)fbDB.ref(workshopsPath()+'/'+workshopId+'/attendees/'+attendeeKey).set(a); }catch(e){}
+    // (sólo los campos de pago: nunca se reescriben datos personales en el taller público)
+    var _ap=workshopsPath()+'/'+workshopId+'/attendees/'+attendeeKey;
+    var _upd={paid:true,status:'confirmed',paidAt:a.paidAt};
+    Object.keys(_upd).forEach(function(k){
+      fbRestSet(_ap+'/'+k,_upd[k]).catch(function(){
+        try{ if(fbDB)fbDB.ref(_ap+'/'+k).set(_upd[k]); }catch(e){}
+      });
     });
 
     // 2) Marcar también la solicitud (request) enlazada como pagada
@@ -19724,11 +19849,11 @@ function confirmWorkshopPayment(workshopId, attendeeKey){
     // 3) Crear evento VERDE en Google Calendar (usa tu Apps Script)
     if(isGcalConnected()){
       gcalCreateEvent({
-        clientName: a.name||'Cliente',
-        phone: a.phone||'',
+        clientName: af.name||'Cliente',
+        phone: af.phone||'',
         service: wsName,
         date: w.date, startTime: w.time, time: w.time,
-        dur: w.dur||90, note: a.note||'',
+        dur: w.dur||90, note: af.note||'',
         action:'confirmWorkshop'   // usa la rama verde del Apps Script
       }, function(res){
         if(res&&res.ok!==false){ showToast('✅ Pago confirmado · evento en Calendar'); }
@@ -19740,11 +19865,11 @@ function confirmWorkshopPayment(workshopId, attendeeKey){
     haptic&&haptic('add');
 
     // 4) Ofrecer avisar al cliente por WhatsApp
-    if(a.phone){
+    if(af.phone){
       setTimeout(function(){
-        var num=(a.phone||'').replace(/[^0-9]/g,''); if(num.indexOf('34')!==0)num='34'+num;
-        var msg='¡Hola '+(a.name||'').split(' ')[0]+'! Tu plaza en el '+wsName+' del '+fmtWorkshopDate(w.date)+' a las '+w.time+' h ya está *confirmada*. ¡Te esperamos! 🌿 Centro Cuídate';
-        mdcConfirm('¿Avisar a <strong>'+esc(a.name||'')+'</strong> por WhatsApp de que su plaza está confirmada?','Avisar al cliente','💬 Abrir WhatsApp',function(){
+        var num=(af.phone||'').replace(/[^0-9]/g,''); if(num.indexOf('34')!==0)num='34'+num;
+        var msg='¡Hola '+(af.name||'').split(' ')[0]+'! Tu plaza en el '+wsName+' del '+fmtWorkshopDate(w.date)+' a las '+w.time+' h ya está *confirmada*. ¡Te esperamos! 🌿 Centro Cuídate';
+        mdcConfirm('¿Avisar a <strong>'+esc(af.name||'')+'</strong> por WhatsApp de que su plaza está confirmada?','Avisar al cliente','💬 Abrir WhatsApp',function(){
           window.open('https://wa.me/'+num+'?text='+encodeURIComponent(msg),'_blank');
         });
       },600);
@@ -19772,6 +19897,7 @@ function removeWorkshopAttendee(workshopId, attendeeKey, name){
     function onResult(ok, err){
       if(done)return;done=true;
       if(ok){
+        _attPrivRemove(workshopId,attendeeKey);
         showToast('Quitada');
         haptic('add');
       } else {
@@ -20225,6 +20351,7 @@ function rejectBooking(reqId,sid){
         // Vía SDK + REST (no esperamos a ninguno, fire-and-forget)
         try{fbDB.ref(getBookingPath(sid)+'/workshops/'+r.workshopId+'/attendees/'+reqId).remove().catch(function(){});}catch(e){}
         fbRestDelete(getBookingPath(sid)+'/workshops/'+r.workshopId+'/attendees/'+reqId).catch(function(){});
+        if(_safeKey(String(r.workshopId))&&_safeKey(String(reqId)))_attPrivRemove(String(r.workshopId),String(reqId));
       }
       // Marcar status='rejected' usando el helper SDK+REST
       _markBookingStatus(sid, reqId, 'rejected');

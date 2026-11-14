@@ -572,11 +572,22 @@ function startBooking(){
   if(fbDB){
     var writes=[];
     writes.push(fbDB.ref('centrocuidate/booking/'+sede+'/requests/'+reqId).set(req));
-    writes.push(fbDB.ref('centrocuidate/booking/'+sede+'/workshops/'+selectedWorkshop.id+'/attendees/'+reqId).set({
-      name:name, phone:phone, note:note,
-      status: paid ? 'pending_payment' : 'pending',
-      requestId:reqId, createdAt:new Date().toISOString()
-    }));
+    /* PRIVACIDAD: el taller es de lectura pública, así que ahí sólo se guarda
+       el estado de la plaza. Nombre, teléfono y nota van a una zona privada
+       que sólo puede leer el centro. */
+    var attPub={ status: paid ? 'pending_payment' : 'pending',
+      requestId:reqId, createdAt:new Date().toISOString() };
+    var attPrv={ name:name, phone:phone, note:note };
+    var attRef=fbDB.ref('centrocuidate/booking/'+sede+'/workshops/'+selectedWorkshop.id+'/attendees/'+reqId);
+    writes.push(
+      fbDB.ref('centrocuidate/booking/'+sede+'/attendeesPrivate/'+selectedWorkshop.id+'/'+reqId).set(attPrv)
+        .then(function(){ return attRef.set(attPub); })
+        .catch(function(){
+          // Compatibilidad con reglas anteriores (formato antiguo)
+          return attRef.set({ name:name, phone:phone, note:note,
+            status:attPub.status, requestId:reqId, createdAt:attPub.createdAt });
+        })
+    );
     Promise.all(writes).then(afterWrite).catch(function(){ afterWrite(); });
   }else{ afterWrite(); }
 }

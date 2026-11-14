@@ -20034,7 +20034,7 @@ function bookingReqCard(r,isPending){
 
   // Color de fondo según estado
   var bgColor = isPending && !isApproved && !isRejected
-    ? 'linear-gradient(135deg, rgba(74,158,245,.06), rgba(74,158,245,.02))'
+    ? 'linear-gradient(135deg, rgba(74,158,245,.12), rgba(74,158,245,.05)), var(--surface)'
     : 'var(--surface)';
   var borderColor = isPending && !isApproved && !isRejected
     ? '2px solid rgba(74,158,245,.32)'
@@ -20077,7 +20077,7 @@ function bookingReqCard(r,isPending){
   h+='</div>';
 
   // Info de la cita en bloque destacado
-  h+='<div style="background:rgba(255,255,255,.5);border:1px solid var(--border);border-radius:var(--r-md);padding:10px 12px;margin-bottom:'+(isPending?'12px':'0')+'">';
+  h+='<div style="background:var(--surface2);border:1px solid var(--border2);border-radius:var(--r-md);padding:10px 12px;margin-bottom:'+(isPending?'12px':'0')+'">';
   // Fecha + hora prominentes
   h+='<div style="display:flex;align-items:center;gap:10px;margin-bottom:6px">';
   h+='<div style="font-size:13px;font-weight:800;color:var(--text)">📅 '+fdate(r.date)+'</div>';

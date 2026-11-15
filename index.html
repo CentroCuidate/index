@@ -15927,11 +15927,21 @@ function openDietGeneratorModal(clientId){
   }
 }
 
-/* Modelos para generar dietas: primero el rápido; si la cuenta no lo tiene
-   disponible, se usa el anterior. */
-var DIET_MODELS=['claude-haiku-5-5','claude-opus-4-5'];
-function _dietApiCall(apiKey,prompt,idx){
+/* Petición a la IA para generar dietas. Se prueba primero la opción más
+   rápida y, si la cuenta o la API no la aceptan, se pasa a la siguiente.
+   La respuesta llega en streaming para poder mostrar el progreso. */
+var DIET_VARIANTS=[
+  {model:'claude-haiku-5-5',extra:{output_config:{effort:'low'}}},
+  {model:'claude-haiku-5-5',extra:{}},
+  {model:'claude-opus-4-5',extra:{}}
+];
+function _dietApiCall(apiKey,prompt,onProgress,idx){
   idx=idx||0;
+  var v=DIET_VARIANTS[idx];
+  var canStream=!!(window.ReadableStream&&window.TextDecoder);
+  var body={model:v.model,max_tokens:12000,messages:[{role:'user',content:prompt}]};
+  Object.keys(v.extra).forEach(function(k){body[k]=v.extra[k];});
+  if(canStream)body.stream=true;
   return fetch('https://api.anthropic.com/v1/messages',{
     method:'POST',
     headers:{
@@ -15940,22 +15950,36 @@ function _dietApiCall(apiKey,prompt,idx){
       'anthropic-version':'2023-06-01',
       'anthropic-dangerous-direct-browser-access':'true'
     },
-    body:JSON.stringify({
-      model:DIET_MODELS[idx],
-      max_tokens:12000,
-      messages:[{role:'user',content:prompt}]
-    })
+    body:JSON.stringify(body)
   }).then(function(res){
     if(!res.ok){
       return res.json().catch(function(){return {};}).then(function(errData){
         var em=errData.error&&errData.error.message?errData.error.message:'HTTP '+res.status;
-        var et=(errData.error&&errData.error.type)||'';
-        var modelIssue=res.status===404||et==='not_found_error'||(res.status===400&&/model/i.test(em));
-        if(modelIssue&&idx<DIET_MODELS.length-1)return _dietApiCall(apiKey,prompt,idx+1);
+        if((res.status===400||res.status===404)&&idx<DIET_VARIANTS.length-1)return _dietApiCall(apiKey,prompt,onProgress,idx+1);
         throw new Error(em);
       });
     }
-    return res.json();
+    if(!canStream||!res.body||!res.body.getReader)return res.json();
+    var reader=res.body.getReader(),dec=new TextDecoder(),buf='',text='';
+    if(onProgress)try{onProgress('');}catch(e){}
+    function pump(){
+      return reader.read().then(function(r){
+        if(r.done)return {content:[{type:'text',text:text}]};
+        buf+=dec.decode(r.value,{stream:true});
+        var parts=buf.split('\n');buf=parts.pop();
+        for(var i=0;i<parts.length;i++){
+          var line=parts[i];
+          if(line.indexOf('data:')!==0)continue;
+          var js=line.slice(5).trim();if(!js)continue;
+          var ev=null;try{ev=JSON.parse(js);}catch(e){continue;}
+          if(ev.type==='content_block_delta'&&ev.delta&&ev.delta.type==='text_delta'){text+=ev.delta.text||'';}
+          else if(ev.type==='error'){throw new Error((ev.error&&ev.error.message)||'Error de API');}
+        }
+        if(onProgress)try{onProgress(text);}catch(e){}
+        return pump();
+      });
+    }
+    return pump();
   });
 }
 /* Guarda la dieta recién generada para que no se pierda al cerrar la ventana:
@@ -16032,7 +16056,14 @@ async function generateDiet(clientId){
     return;
   }
 
-  _dietApiCall(apiKey,prompt).then(function(data2){
+  function _dietProgress(txt){
+    if(!resultEl)return;
+    var pe=document.getElementById('dietProg');
+    if(!pe){pe=document.createElement('div');pe.id='dietProg';pe.style.cssText='text-align:center;font-size:12.5px;font-weight:700;color:var(--green-dark);padding:0 0 14px';resultEl.appendChild(pe);}
+    var n=(txt.match(/"dia"\s*:/g)||[]).length;
+    pe.textContent=n?('Escribiendo el d\u00eda '+Math.min(n,days)+' de '+days+'\u2026'):'Dise\u00f1ando tu plan\u2026';
+  }
+  _dietApiCall(apiKey,prompt,_dietProgress).then(function(data2){
     // Handle API errors returned as JSON
     if(data2.error){
       throw new Error(data2.error.message||'Error de API');
@@ -16060,6 +16091,8 @@ async function generateDiet(clientId){
     renderDietPlan(plan,clientId,c);
     _rememberDiet(plan,clientId,c);
     if(btn){btn.disabled=false;btn.innerHTML='&#128260; Regenerar';}
+    // Abrir directamente el documento final (vista previa + compartir PDF)
+    try{printDietPlan();}catch(e){console.warn('[dieta] visor',e&&e.message);}
   }).catch(function(err){
     var msg=err.message||'Error desconocido';
     var isKeyError=msg.toLowerCase().indexOf('invalid')>=0||msg.toLowerCase().indexOf('auth')>=0||msg.toLowerCase().indexOf('api_key')>=0||msg.indexOf('401')>=0;
@@ -16103,7 +16136,7 @@ function renderDietPlan(plan,clientId,cli){
   // Action buttons
   h+='<div style="display:flex;flex-direction:column;gap:8px;margin-top:10px">';
   h+='<div style="display:flex;gap:8px">';
-  h+='<button onclick="printDietPlan()" style="flex:1;padding:11px;border-radius:var(--r-md);border:none;background:linear-gradient(135deg,var(--green),var(--green-dark));color:#fff;font-size:13px;font-weight:700;font-family:inherit;cursor:pointer">&#128196; Descargar PDF</button>';
+  h+='<button onclick="printDietPlan()" style="flex:1;padding:11px;border-radius:var(--r-md);border:none;background:linear-gradient(135deg,var(--green),var(--green-dark));color:#fff;font-size:13px;font-weight:700;font-family:inherit;cursor:pointer">&#128196; Ver y compartir PDF</button>';
   if(clientId)h+='<button onclick="saveDietToClient(\''+clientId+'\')" style="flex:1;padding:11px;border-radius:var(--r-md);border:none;background:var(--surface2);color:var(--text2);border:1.5px solid var(--border2);font-size:13px;font-weight:700;font-family:inherit;cursor:pointer">&#128190; Guardar</button>';
   h+='</div>';
   // WhatsApp share button
@@ -16231,8 +16264,10 @@ function buildDietDoc(plan,meta){
   +'.dp-box strong{display:block;font-size:9.5px;letter-spacing:.16em;text-transform:uppercase;margin-bottom:2px}'
   +'.dp-foot{margin-top:26px;padding-top:14px;border-top:1px solid #E9DFC6;text-align:center;font-size:10px;color:#7C8A82}'
   +'.dp-foot strong{color:#B8862B;letter-spacing:.2em;text-transform:uppercase;font-size:9.5px;display:block;margin-bottom:4px}'
-  +'.dp-bar{position:sticky;top:0;z-index:5;display:flex;gap:8px;justify-content:center;padding:10px;background:rgba(243,239,230,.96)}'
-  +'.dp-bar button{padding:10px 18px;border-radius:99px;border:none;background:#1F3A2E;color:#fff;font-size:13px;font-weight:700;font-family:inherit;cursor:pointer}'
+  +'.dp-bar{position:sticky;top:0;z-index:5;display:flex;flex-wrap:wrap;gap:8px;justify-content:center;padding:calc(10px + env(safe-area-inset-top)) 10px 10px;background:rgba(243,239,230,.97);border-bottom:1px solid #E9DFC6}'
+  +'.dp-bar button[disabled]{opacity:.45}'
+  +'.dp-st{width:100%;text-align:center;font-size:11.5px;color:#55695E;font-family:-apple-system,"Segoe UI",Helvetica,Arial,sans-serif}'
+  +'.dp-bar button{padding:10px 16px;border-radius:99px;border:none;background:#1F3A2E;color:#fff;font-size:13px;font-weight:700;font-family:inherit;cursor:pointer}'
   +'.dp-bar button.sec{background:#fff;color:#1F3A2E;border:1.5px solid #1F3A2E}'
   +'@media (max-width:560px){.dp{padding:22px 16px}.dp-meta{flex-direction:column}.dp-meta>div{border-left:none;border-top:1px solid #E9DFC6}.dp-meta>div:first-child{border-top:none}.dp-meal-l{width:80px}.dp-tips{columns:1}.dp-title{font-size:23px}}'
   +'@media print{.dp{max-width:none;padding:0}.dp-bar{display:none!important}}';
@@ -16273,6 +16308,193 @@ function buildDietDoc(plan,meta){
   return {css:css,body:b,fileTitle:fileTitle};
 }
 
+/* ── PDF REAL DE LA DIETA (jsPDF, vectorial) ─────────────────────
+   Genera un archivo .pdf de verdad para poder compartirlo por
+   WhatsApp, email, etc. Mismo diseño que la vista previa. */
+function _pdfTxt(s){
+  return String(s==null?'':s)
+    .replace(/[‘’‚′]/g,"'").replace(/[“”„″]/g,'"')
+    .replace(/[–—−]/g,'-').replace(/…/g,'...').replace(/[•●▪]/g,'·')
+    .replace(/ /g,' ').replace(/[^\x09\x0A\x20-\x7E¡-ÿ]/g,'').replace(/[ \t]+/g,' ').replace(/ +([.,;:!?])/g,'$1').trim();
+}
+function buildDietPdf(JsPDF,plan,meta,logo){
+  meta=meta||{};
+  var doc=new JsPDF({unit:'mm',format:'a4',compress:true});
+  var W=210,H=297,M=15,CW=W-M*2,y=0;
+  var GOLD=[184,134,43],GOLDL=[201,161,74],DARK=[31,58,46],INK=[34,48,42],GREEN=[46,130,96],MUTE=[85,105,94];
+  function fill(c){doc.setFillColor(c[0],c[1],c[2]);}
+  function stroke(c){doc.setDrawColor(c[0],c[1],c[2]);}
+  function color(c){doc.setTextColor(c[0],c[1],c[2]);}
+  function font(f,st,sz){doc.setFont(f,st);doc.setFontSize(sz);}
+  function spaced(t,x,yy,cs,align){
+    var w=doc.getTextWidth(t)+cs*(t.length-1);
+    var x0=align==='center'?x-w/2:x;
+    doc.text(t,x0,yy,{charSpace:cs});
+    return w;
+  }
+  function lines(t,w){return doc.splitTextToSize(_pdfTxt(t),w);}
+  function need(h){if(y+h>H-17){doc.addPage();y=16;return true;}return false;}
+  var client=_pdfTxt(meta.client),pro=_pdfTxt(meta.pro);
+  var dt=meta.date?new Date(String(meta.date).length===10?meta.date+'T00:00:00':meta.date):new Date();
+  if(isNaN(dt.getTime()))dt=new Date();
+  var MES=['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
+  var dateStr=dt.getDate()+' de '+MES[dt.getMonth()]+' de '+dt.getFullYear();
+  var dias=plan.dias||[];
+
+  // ── Cabecera ──
+  y=10;
+  if(logo){try{doc.addImage(logo,'JPEG',W/2-21,y,42,42,undefined,'FAST');}catch(e){}}
+  y+=logo?45:8;
+  font('helvetica','bold',7.5);color(GOLD);spaced('PLAN NUTRICIONAL PERSONALIZADO',W/2,y,0.9,'center');
+  y+=9;
+  font('times','bold',22);color(DARK);
+  var tl=lines(plan.titulo||'Tu plan de alimentación',CW-20);
+  doc.text(tl,W/2,y,{align:'center'});y+=tl.length*8.6-2;
+  if(plan.descripcion){
+    font('times','italic',11);color(MUTE);
+    var dl=lines(plan.descripcion,CW-40);
+    y+=2;doc.text(dl,W/2,y,{align:'center'});y+=dl.length*5;
+  }
+  y+=2;stroke(GOLDL);doc.setLineWidth(0.3);doc.line(M+18,y,W-M-18,y);y+=6;
+
+  // ── Datos ──
+  var cells=[];
+  if(client)cells.push(['PARA',client]);
+  if(pro)cells.push(['ELABORADO POR',pro]);
+  cells.push(['FECHA',dateStr+(dias.length?' · '+dias.length+' días':'')]);
+  var cw=CW/cells.length,mh=0,cl=[];
+  font('helvetica','bold',10.5);
+  cells.forEach(function(c){var l=doc.splitTextToSize(c[1],cw-9);cl.push(l);mh=Math.max(mh,l.length);});
+  var boxH=10+mh*4.6;
+  fill([253,250,242]);stroke([233,223,198]);doc.setLineWidth(0.25);doc.roundedRect(M,y,CW,boxH,3,3,'FD');
+  cells.forEach(function(c,i){
+    var x=M+cw*i;
+    if(i>0)doc.line(x,y,x,y+boxH);
+    font('helvetica','bold',6.3);color(GOLD);spaced(c[0],x+4.5,y+5.2,0.55);
+    font('helvetica','bold',10.5);color(DARK);doc.text(cl[i],x+4.5,y+10.2);
+  });
+  y+=boxH+7;
+
+  // ── Iconos de comida (dibujados) ──
+  function icon(kind,cx,cy){
+    fill([246,239,217]);doc.circle(cx,cy,3.7,'F');
+    doc.setLineWidth(0.3);
+    if(kind===0){ // sol
+      fill([224,160,40]);doc.circle(cx,cy+0.2,1.25,'F');stroke([224,160,40]);
+      for(var a=0;a<8;a++){var r=a*Math.PI/4;doc.line(cx+Math.cos(r)*1.8,cy+0.2+Math.sin(r)*1.8,cx+Math.cos(r)*2.5,cy+0.2+Math.sin(r)*2.5);}
+    }else if(kind===1){ // manzana
+      fill([214,72,60]);doc.circle(cx-0.55,cy+0.45,1.35,'F');doc.circle(cx+0.55,cy+0.45,1.35,'F');
+      stroke([90,120,60]);doc.setLineWidth(0.4);doc.line(cx,cy-0.7,cx+0.5,cy-1.9);
+      fill([90,150,80]);doc.ellipse(cx+1.1,cy-1.5,0.7,0.35,'F');
+    }else if(kind===2){ // cuenco
+      fill([46,130,96]);doc.circle(cx,cy-0.1,2.1,'F');fill([246,239,217]);doc.rect(cx-2.4,cy-2.4,4.8,2.3,'F');
+      fill([120,180,110]);doc.circle(cx-0.9,cy-0.5,0.7,'F');doc.circle(cx+0.1,cy-0.8,0.75,'F');doc.circle(cx+1,cy-0.45,0.65,'F');
+    }else if(kind===3){ // taza
+      fill([141,98,62]);doc.roundedRect(cx-1.7,cy-1,2.9,2.6,0.5,0.5,'F');
+      stroke([141,98,62]);doc.setLineWidth(0.45);doc.circle(cx+1.5,cy+0.1,0.8,'S');
+      stroke([180,150,120]);doc.setLineWidth(0.25);doc.line(cx-0.9,cy-1.6,cx-0.9,cy-2.3);doc.line(cx+0.1,cy-1.6,cx+0.1,cy-2.3);
+    }else{ // luna
+      fill([63,81,140]);doc.circle(cx,cy,1.9,'F');fill([246,239,217]);doc.circle(cx+0.95,cy-0.6,1.65,'F');
+    }
+  }
+
+  // ── Días ──
+  var LBLX=M+13,TXTX=M+43,TXTW=CW-43-5;
+  dias.forEach(function(d,i){
+    var meals=[[0,'DESAYUNO',d.desayuno],[1,'MEDIA MAÑANA',d.media_manana],[2,'ALMUERZO',d.almuerzo],[3,'MERIENDA',d.merienda],[4,'CENA',d.cena]].filter(function(m){return !!m[2];});
+    font('helvetica','normal',9.3);
+    var rows=meals.map(function(m){var l=lines(m[2],TXTW);return {m:m,l:l,h:Math.max(10.2,l.length*4.25+5.6)};});
+    var noteL=null,noteH=0;
+    if(d.notas){font('times','italic',9.2);noteL=lines(d.notas,CW-16);noteH=noteL.length*4.1+5.2+4;}
+    var cardH=9+rows.reduce(function(a,r){return a+r.h;},0)+noteH+(noteH?0:0.5);
+    need(cardH+5);
+    // tarjeta
+    stroke([221,231,224]);doc.setLineWidth(0.25);fill([255,255,255]);doc.roundedRect(M,y,CW,cardH,3,3,'FD');
+    fill(DARK);doc.roundedRect(M,y,CW,9,3,3,'F');doc.rect(M,y+4.5,CW,4.5,'F');
+    font('times','bold',12);doc.setTextColor(255,255,255);
+    var dn='Día '+_pdfTxt(d.dia!=null?d.dia:(i+1));
+    doc.text(dn,M+5,y+6.2);
+    stroke(GOLDL);doc.setLineWidth(0.25);doc.line(M+5+doc.getTextWidth(dn)+4,y+4.6,W-M-5,y+4.6);
+    var yy=y+9;
+    rows.forEach(function(r,ri){
+      if(ri>0){stroke([238,243,239]);doc.setLineWidth(0.2);doc.line(M+0.2,yy,W-M-0.2,yy);}
+      icon(r.m[0],M+7,yy+5.1);
+      font('helvetica','bold',6.6);color(GREEN);spaced(r.m[1],LBLX,yy+6,0.4);
+      font('helvetica','normal',9.3);color(INK);doc.text(r.l,TXTX,yy+6);
+      yy+=r.h;
+    });
+    if(noteL){
+      fill([253,250,242]);doc.rect(M+5,yy+0.5,CW-10,noteH-4,'F');
+      fill(GOLDL);doc.rect(M+5,yy+0.5,0.8,noteH-4,'F');
+      font('times','italic',9.2);doc.setTextColor(91,74,30);doc.text(noteL,M+8.5,yy+4.9);
+    }
+    y+=cardH+5;
+  });
+
+  // ── Consejos ──
+  var tips=(plan.consejos_generales||[]).map(_pdfTxt).filter(function(t){return !!t;});
+  if(tips.length){
+    font('helvetica','normal',9);
+    var colW=(CW-8)/2,tl2=tips.map(function(t){return doc.splitTextToSize(t,colW-8);});
+    var half=Math.ceil(tips.length/2);
+    function colH(a,b){var h=0;for(var k=a;k<b;k++)h+=tl2[k].length*4.1+3;return h;}
+    var th=Math.max(colH(0,half),colH(half,tips.length));
+    need(12+th);
+    y+=3;font('times','bold',13.5);color(DARK);doc.text('Consejos para tu día a día',M,y);y+=6.5;
+    [[0,half,M],[half,tips.length,M+colW+8]].forEach(function(c){
+      var ty=y;
+      for(var k=c[0];k<c[1];k++){
+        fill(DARK);doc.circle(c[2]+2.4,ty-1.1,2.4,'F');
+        font('helvetica','bold',6.8);doc.setTextColor(232,201,122);doc.text(String(k+1),c[2]+2.4,ty-0.3,{align:'center'});
+        font('helvetica','normal',9);color(INK);doc.text(tl2[k],c[2]+7.5,ty);
+        ty+=tl2[k].length*4.1+3;
+      }
+    });
+    y+=th+2;
+  }
+  function box(label,text,bg,fg){
+    if(!text)return;
+    font('helvetica','normal',9);
+    var l=lines(text,CW-12),h=l.length*4.1+10.5;
+    need(h+3);
+    fill(bg);doc.roundedRect(M,y,CW,h,2.5,2.5,'F');
+    font('helvetica','bold',6.3);color(fg);spaced(label,M+6,y+5.4,0.5);
+    font('helvetica','normal',9);doc.text(l,M+6,y+10);
+    y+=h+3;
+  }
+  box('HIDRATACIÓN',plan.hidratacion,[238,246,251],[31,78,107]);
+  box('SUPLEMENTACIÓN SUGERIDA',plan.suplementos_sugeridos,[243,238,249],[75,58,115]);
+
+  // ── Cierre ──
+  need(16);
+  y+=4;stroke([233,223,198]);doc.setLineWidth(0.25);doc.line(M,y,W-M,y);y+=5.5;
+  font('helvetica','bold',6.5);color(GOLD);spaced('CENTRO CUÍDATE · BIENESTAR INTEGRAL',W/2,y,0.6,'center');y+=4.2;
+  font('helvetica','normal',7.2);doc.setTextColor(124,138,130);
+  doc.text('Plan orientativo de alimentación'+(client?' preparado para '+client:'')+'. No sustituye el consejo de tu médico.',W/2,y,{align:'center'});
+
+  // ── Pie de página ──
+  var n=doc.getNumberOfPages();
+  for(var p=1;p<=n;p++){
+    doc.setPage(p);font('helvetica','normal',7);doc.setTextColor(160,170,164);
+    doc.text('Centro Cuídate'+(client?' · '+client:''),M,H-8);
+    doc.text(p+' / '+n,W-M,H-8,{align:'right'});
+  }
+  return doc;
+}
+
+/* ── VISOR DE DIETA: vista previa + compartir / descargar / imprimir ── */
+var _dietPdfState=null;
+function _loadJsPDF(){
+  if(window.jspdf&&window.jspdf.jsPDF)return Promise.resolve(window.jspdf.jsPDF);
+  if(window._jspdfLoading)return window._jspdfLoading;
+  window._jspdfLoading=new Promise(function(res,rej){
+    var sc=document.createElement('script');sc.src='./vendor/jspdf.umd.min.js';sc.async=true;
+    sc.onload=function(){if(window.jspdf&&window.jspdf.jsPDF)res(window.jspdf.jsPDF);else{window._jspdfLoading=null;rej(new Error('Generador de PDF no disponible'));}};
+    sc.onerror=function(){window._jspdfLoading=null;rej(new Error('No se pudo cargar el generador de PDF'));};
+    document.head.appendChild(sc);
+  });
+  return window._jspdfLoading;
+}
 function printDietPlan(planArg,metaArg){
   var el=document.getElementById('dietResult');
   var plan=planArg||((el&&el._dietPlan)?el._dietPlan:null);
@@ -16280,17 +16502,62 @@ function printDietPlan(planArg,metaArg){
   var meta=metaArg||{};
   if(!meta.client&&el&&!planArg)meta.client=el._clientName||'';
   if(!meta.pro){try{meta.pro=(sd().userName||'').trim();}catch(e){}}
+  openDietViewer(plan,meta);
+}
+function openDietViewer(plan,meta){
+  dietViewerClose();
   var doc=buildDietDoc(plan,meta);
-  // iOS Safari blocks window.open — use in-page overlay instead
-  var isIOS=/iPad|iPhone|iPod/.test(navigator.userAgent)||(/Macintosh/.test(navigator.userAgent)&&'ontouchend' in document);
-  if(isIOS){printDietPlanIOS(plan,doc);return;}
-  var html='<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>'+esc(doc.fileTitle)+'</title>';
-  html+='<style>@page{size:A4;margin:13mm}html,body{margin:0;background:#F3EFE6}@media print{html,body{background:#fff}}'+doc.css+'</style></head><body>';
-  html+='<div class="dp-bar"><button onclick="window.print()">⬇ Guardar como PDF / Imprimir</button><button class="sec" onclick="window.close()">Cerrar</button></div>';
-  html+=doc.body+'</body></html>';
-  var w=window.open('','_blank');
-  if(w){w.document.write(html);w.document.close();w.focus();setTimeout(function(){try{w.print();}catch(e){}},700);}
-  else{printDietPlanIOS(plan,doc);}
+  var fname=(doc.fileTitle||'Plan nutricional').replace(/[\\\/:*?"<>|]+/g,' ').replace(/\s+/g,' ').trim().slice(0,90)+'.pdf';
+  var st=_dietPdfState={name:fname,title:doc.fileTitle,file:null,blob:null,url:null};
+  var div=document.createElement('div');
+  div.id='__dietPrint';
+  div.style.cssText='position:fixed;inset:0;z-index:9999;background:#F3EFE6;overflow-y:auto;-webkit-overflow-scrolling:touch;';
+  var html='<style>'+doc.css+'@media print{body>*:not(#__dietPrint){display:none!important}#__dietPrint{position:static!important;overflow:visible!important;background:#fff!important}}</style>';
+  html+='<div class="dp-bar">';
+  html+='<button id="dvShare" onclick="dietViewerShare()" disabled>\uD83D\uDCE4 Compartir PDF</button>';
+  html+='<button id="dvDown" class="sec" onclick="dietViewerDownload()" disabled>\u2B07 Descargar</button>';
+  html+='<button class="sec" onclick="window.print()">\uD83D\uDDA8 Imprimir</button>';
+  html+='<button class="sec" onclick="dietViewerClose()">Cerrar</button>';
+  html+='<div class="dp-st" id="dvStatus">Preparando el PDF\u2026</div>';
+  html+='</div>'+doc.body;
+  div.innerHTML=html;
+  document.body.appendChild(div);
+  _loadJsPDF().then(function(J){
+    var pdf=buildDietPdf(J,plan,meta,(typeof APP_LOGO!=='undefined'&&APP_LOGO&&APP_LOGO.indexOf('data:image/jpeg')===0)?APP_LOGO:null);
+    var blob=pdf.output('blob');
+    if(_dietPdfState!==st)return;
+    st.blob=blob;st.url=URL.createObjectURL(blob);
+    try{st.file=new File([blob],st.name,{type:'application/pdf'});}catch(e){st.file=null;}
+    var canShare=false;
+    try{canShare=!!(st.file&&navigator.share&&navigator.canShare&&navigator.canShare({files:[st.file]}));}catch(e){}
+    var bs=document.getElementById('dvShare'),bd=document.getElementById('dvDown'),ss=document.getElementById('dvStatus');
+    if(bd)bd.disabled=false;
+    if(bs){if(canShare)bs.disabled=false;else bs.style.display='none';}
+    if(ss)ss.textContent=canShare?'PDF listo \u00b7 comp\u00e1rtelo por WhatsApp, email o donde quieras':'PDF listo \u00b7 desc\u00e1rgalo y adj\u00fantalo donde quieras';
+  }).catch(function(e){
+    if(_dietPdfState!==st)return;
+    var ss=document.getElementById('dvStatus');
+    if(ss)ss.textContent='No se pudo preparar el archivo PDF ('+((e&&e.message)||'error')+'). Puedes usar Imprimir \u2192 Guardar como PDF.';
+  });
+}
+function dietViewerShare(){
+  var st=_dietPdfState;if(!st||!st.file)return;
+  try{
+    navigator.share({files:[st.file],title:st.title}).catch(function(e){
+      if(e&&e.name!=='AbortError')showToast('No se pudo compartir. Usa Descargar.');
+    });
+  }catch(e){showToast('No se pudo compartir. Usa Descargar.');}
+}
+function dietViewerDownload(){
+  var st=_dietPdfState;if(!st||!st.url)return;
+  var a=document.createElement('a');a.href=st.url;a.download=st.name;a.rel='noopener';
+  document.body.appendChild(a);a.click();
+  setTimeout(function(){if(a.parentNode)a.parentNode.removeChild(a);},200);
+}
+function dietViewerClose(){
+  var st=_dietPdfState;_dietPdfState=null;
+  if(st&&st.url){try{URL.revokeObjectURL(st.url);}catch(e){}}
+  var n=document.getElementById('__dietPrint');if(n&&n.parentNode)n.parentNode.removeChild(n);
 }
 
 function saveDietToClient(clientId){
@@ -16371,7 +16638,7 @@ function openSavedDietsModal(clientId){
       h+='<div><div style="font-size:13px;font-weight:700;color:var(--text)">'+esc(plan.titulo||'Plan sin título')+'</div>';
       h+='<div style="font-size:11px;color:var(--text3);font-weight:500">'+fdate(d.date)+'</div></div>';
       h+='<div style="display:flex;gap:6px">';
-      h+='<button onclick="printSavedDiet(\''+clientId+'\','+idx+')" style="padding:7px 11px;border-radius:var(--r-sm);border:none;background:var(--green);color:#fff;font-size:11px;font-weight:700;font-family:inherit;cursor:pointer">&#128196; Imprimir</button>';
+      h+='<button onclick="printSavedDiet(\''+clientId+'\','+idx+')" style="padding:7px 11px;border-radius:var(--r-sm);border:none;background:var(--green);color:#fff;font-size:11px;font-weight:700;font-family:inherit;cursor:pointer">&#128196; Ver PDF</button>';
       h+='<button onclick="delSavedDiet(\''+clientId+'\',\''+d.id+'\')" style="padding:7px 10px;border-radius:var(--r-sm);border:1px solid var(--border2);background:var(--surface);color:var(--text3);font-size:11px;cursor:pointer">&#128465;</button>';
       h+='</div></div>';
       if(plan.descripcion)h+='<div style="font-size:12px;color:var(--text2);line-height:1.5">'+esc(plan.descripcion)+'</div>';
@@ -16481,20 +16748,7 @@ function getCurrentThemeMode(){
 /* ══════════════════════════════════════════
    [SEC-45] IMPRIMIR DIETA EN IOS (sin window.open)
    ══════════════════════════════════════════ */
-function printDietPlanIOS(plan,doc){
-  // iOS / ventanas bloqueadas: se muestra dentro de la propia app
-  if(!doc){var m={};try{m.pro=(sd().userName||'').trim();}catch(e){}doc=buildDietDoc(plan,m);}
-  var old=document.getElementById('__dietPrint');
-  if(old)old.parentNode.removeChild(old);
-  var div=document.createElement('div');
-  div.id='__dietPrint';
-  div.style.cssText='position:fixed;inset:0;z-index:9999;background:#F3EFE6;overflow-y:auto;-webkit-overflow-scrolling:touch;';
-  var html='<style>'+doc.css+'@media print{body>*:not(#__dietPrint){display:none!important}#__dietPrint{position:static!important;overflow:visible!important;background:#fff!important}}</style>';
-  html+='<div class="dp-bar"><button onclick="window.print()">⬇ Guardar como PDF / Imprimir</button><button class="sec" onclick="var n=document.getElementById(\'__dietPrint\');if(n)n.parentNode.removeChild(n)">Cerrar</button></div>';
-  html+=doc.body;
-  div.innerHTML=html;
-  document.body.appendChild(div);
-}
+function printDietPlanIOS(plan,doc){printDietPlan(plan);}
 
 /* ══════════════════════════════════════════
    [SEC-46] CONFIRMACIÓN CITA WA + ESTADO

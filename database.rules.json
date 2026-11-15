@@ -1,0 +1,52 @@
+{
+  "_nota": "Copia de referencia. Las reglas reales se publican a mano en la consola de Firebase (Realtime Database > Reglas). Sustituye UID_ADMIN_1 y UID_ADMIN_2 por los UID de las cuentas del centro.",
+  "rules": {
+    "centrocuidate": {
+      "users": {
+        "$uid": {
+          ".read": "auth != null && auth.uid == $uid",
+          ".write": "auth != null && auth.uid == $uid"
+        }
+      },
+      "booking": {
+        "$sede": {
+          "config": {
+            ".read": true,
+            ".write": "auth != null && (auth.uid == 'UID_ADMIN_1' || auth.uid == 'UID_ADMIN_2')"
+          },
+          "takenSlots": {
+            ".read": true,
+            ".write": "auth != null && (auth.uid == 'UID_ADMIN_1' || auth.uid == 'UID_ADMIN_2')"
+          },
+          "workshops": {
+            ".read": true,
+            ".write": "auth != null && (auth.uid == 'UID_ADMIN_1' || auth.uid == 'UID_ADMIN_2')",
+            "$workshopId": {
+              "attendees": {
+                "$attId": {
+                  ".write": "!data.exists() && newData.exists() && data.parent().parent().exists() && $attId.matches(/^req_[0-9]+_[a-z0-9]*$/) && newData.child('requestId').val() == $attId && (newData.child('status').val() == 'pending' || newData.child('status').val() == 'pending_payment') && !newData.child('paid').exists() && !newData.child('name').exists() && !newData.child('phone').exists() && !newData.child('note').exists()"
+                }
+              }
+            }
+          },
+          "attendeesPrivate": {
+            ".read": "auth != null && (auth.uid == 'UID_ADMIN_1' || auth.uid == 'UID_ADMIN_2')",
+            ".write": "auth != null && (auth.uid == 'UID_ADMIN_1' || auth.uid == 'UID_ADMIN_2')",
+            "$workshopId": {
+              "$attId": {
+                ".write": "!data.exists() && newData.exists() && root.child('centrocuidate/booking/' + $sede + '/workshops/' + $workshopId).exists() && $attId.matches(/^req_[0-9]+_[a-z0-9]*$/) && newData.child('name').isString() && newData.child('name').val().length <= 80 && newData.child('phone').isString() && newData.child('phone').val().length <= 20 && (!newData.child('note').exists() || (newData.child('note').isString() && newData.child('note').val().length <= 300))"
+              }
+            }
+          },
+          "requests": {
+            ".read": "auth != null && (auth.uid == 'UID_ADMIN_1' || auth.uid == 'UID_ADMIN_2')",
+            ".write": "auth != null && (auth.uid == 'UID_ADMIN_1' || auth.uid == 'UID_ADMIN_2')",
+            "$reqId": {
+              ".write": "!data.exists() && newData.exists() && $reqId.matches(/^req_[0-9]+_[a-z0-9]*$/) && newData.child('id').val() == $reqId && (newData.child('status').val() == 'pending' || newData.child('status').val() == 'pending_payment') && newData.child('paid').val() == false && newData.child('clientName').isString() && newData.child('clientName').val().length <= 80 && newData.child('clientPhone').isString() && newData.child('clientPhone').val().length <= 20 && (!newData.child('note').exists() || (newData.child('note').isString() && newData.child('note').val().length <= 300))"
+            }
+          }
+        }
+      }
+    }
+  }
+}

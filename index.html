@@ -15904,6 +15904,12 @@ function openDietGeneratorModal(clientId){
   h+='<input id="diet_allergies" class="fld" placeholder="Ej: lactosa, gluten..." value="">';
   h+='<span class="sh-lbl">Preferencias o notas adicionales</span>';
   h+='<input id="diet_notes" class="fld" placeholder="Ej: vegetariana, no le gusta el pescado..." value="'+(c&&c.notes?esc(c.notes.slice(0,100)):'') +'">';
+  try{
+    var _ld=JSON.parse(localStorage.getItem('ccuida_last_diet')||'null');
+    if(_ld&&_ld.plan&&(_ld.clientId||'')===(clientId||'')&&(Date.now()-(_ld.ts||0))<14*86400000){
+      h+='<button id="dietRestoreBtn" type="button" onclick="restoreLastDiet(\''+(clientId||'')+'\')" style="width:100%;margin-top:12px;padding:10px;border-radius:var(--r-md);border:1.5px dashed var(--border2);background:var(--surface2);color:var(--text2);font-size:12.5px;font-weight:700;font-family:inherit;cursor:pointer">&#8617; Recuperar la \u00faltima dieta generada ('+new Date(_ld.ts).toLocaleDateString('es-ES')+')</button>';
+    }
+  }catch(e){}
   h+='<div id="dietResult" style="display:none;margin-top:14px"></div>';
   h+='<div class="sh-actions">';
   h+='<button class="sbtn gho" onclick="closeMod()">Cancelar</button>';
@@ -15919,6 +15925,70 @@ function openDietGeneratorModal(clientId){
       if(mapped){for(var i=0;i<sel.options.length;i++)if(sel.options[i].value===mapped){sel.selectedIndex=i;break;}}
     }
   }
+}
+
+/* Modelos para generar dietas: primero el rápido; si la cuenta no lo tiene
+   disponible, se usa el anterior. */
+var DIET_MODELS=['claude-haiku-5-5','claude-opus-4-5'];
+function _dietApiCall(apiKey,prompt,idx){
+  idx=idx||0;
+  return fetch('https://api.anthropic.com/v1/messages',{
+    method:'POST',
+    headers:{
+      'Content-Type':'application/json',
+      'x-api-key':apiKey,
+      'anthropic-version':'2023-06-01',
+      'anthropic-dangerous-direct-browser-access':'true'
+    },
+    body:JSON.stringify({
+      model:DIET_MODELS[idx],
+      max_tokens:12000,
+      messages:[{role:'user',content:prompt}]
+    })
+  }).then(function(res){
+    if(!res.ok){
+      return res.json().catch(function(){return {};}).then(function(errData){
+        var em=errData.error&&errData.error.message?errData.error.message:'HTTP '+res.status;
+        var et=(errData.error&&errData.error.type)||'';
+        var modelIssue=res.status===404||et==='not_found_error'||(res.status===400&&/model/i.test(em));
+        if(modelIssue&&idx<DIET_MODELS.length-1)return _dietApiCall(apiKey,prompt,idx+1);
+        throw new Error(em);
+      });
+    }
+    return res.json();
+  });
+}
+/* Guarda la dieta recién generada para que no se pierda al cerrar la ventana:
+   en la ficha de la clienta (si la hay) y como "última dieta" en el dispositivo. */
+function _rememberDiet(plan,clientId,c){
+  var el=document.getElementById('dietResult');
+  try{localStorage.setItem('ccuida_last_diet',JSON.stringify({plan:plan,clientId:clientId||'',clientName:(c&&c.name)||'',ts:Date.now()}));}catch(e){}
+  if(!clientId)return;
+  try{
+    for(var i=0;i<sd().clients.length;i++){
+      if(sd().clients[i].id===clientId){
+        var cl=sd().clients[i];
+        if(!cl.diets)cl.diets=[];
+        // Si se regenera en la misma ventana, sustituye a la anterior
+        if(el&&el._autoDietId)cl.diets=cl.diets.filter(function(d){return d.id!==el._autoDietId;});
+        var nid=uid();
+        cl.diets.push({id:nid,date:new Date().toISOString().slice(0,10),plan:plan});
+        if(el)el._autoDietId=nid;
+        save();fbSave();
+        showToast('✓ Dieta guardada en la ficha de '+(cl.name||'la clienta'));
+        break;
+      }
+    }
+  }catch(e){console.warn('[dieta] autoguardado',e&&e.message);}
+}
+function restoreLastDiet(clientId){
+  var last=null;try{last=JSON.parse(localStorage.getItem('ccuida_last_diet')||'null');}catch(e){}
+  if(!last||!last.plan){showToast('No hay ninguna dieta reciente');return;}
+  var c=null;if(clientId)for(var i=0;i<(sd().clients||[]).length;i++)if(sd().clients[i].id===clientId){c=sd().clients[i];break;}
+  renderDietPlan(last.plan,clientId||'',c||{name:last.clientName||''});
+  var el=document.getElementById('dietResult');
+  if(el&&clientId)el._autoDietId='restored';
+  var rb=document.getElementById('dietRestoreBtn');if(rb)rb.style.display='none';
 }
 
 async function generateDiet(clientId){
@@ -15962,27 +16032,7 @@ async function generateDiet(clientId){
     return;
   }
 
-  fetch('https://api.anthropic.com/v1/messages',{
-    method:'POST',
-    headers:{
-      'Content-Type':'application/json',
-      'x-api-key':apiKey,
-      'anthropic-version':'2023-06-01',
-      'anthropic-dangerous-direct-browser-access':'true'
-    },
-    body:JSON.stringify({
-      model:'claude-opus-4-5',
-      max_tokens:4000,
-      messages:[{role:'user',content:prompt}]
-    })
-  }).then(function(res){
-    if(!res.ok){
-      return res.json().then(function(errData){
-        throw new Error(errData.error&&errData.error.message?errData.error.message:'HTTP '+res.status);
-      });
-    }
-    return res.json();
-  }).then(function(data2){
+  _dietApiCall(apiKey,prompt).then(function(data2){
     // Handle API errors returned as JSON
     if(data2.error){
       throw new Error(data2.error.message||'Error de API');
@@ -16008,6 +16058,7 @@ async function generateDiet(clientId){
       throw new Error('El plan generado está incompleto. Inténtalo de nuevo.');
     }
     renderDietPlan(plan,clientId,c);
+    _rememberDiet(plan,clientId,c);
     if(btn){btn.disabled=false;btn.innerHTML='&#128260; Regenerar';}
   }).catch(function(err){
     var msg=err.message||'Error desconocido';
@@ -16052,7 +16103,7 @@ function renderDietPlan(plan,clientId,cli){
   // Action buttons
   h+='<div style="display:flex;flex-direction:column;gap:8px;margin-top:10px">';
   h+='<div style="display:flex;gap:8px">';
-  h+='<button onclick="printDietPlan()" style="flex:1;padding:11px;border-radius:var(--r-md);border:none;background:linear-gradient(135deg,var(--green),var(--green-dark));color:#fff;font-size:13px;font-weight:700;font-family:inherit;cursor:pointer">&#128196; Imprimir / PDF</button>';
+  h+='<button onclick="printDietPlan()" style="flex:1;padding:11px;border-radius:var(--r-md);border:none;background:linear-gradient(135deg,var(--green),var(--green-dark));color:#fff;font-size:13px;font-weight:700;font-family:inherit;cursor:pointer">&#128196; Descargar PDF</button>';
   if(clientId)h+='<button onclick="saveDietToClient(\''+clientId+'\')" style="flex:1;padding:11px;border-radius:var(--r-md);border:none;background:var(--surface2);color:var(--text2);border:1.5px solid var(--border2);font-size:13px;font-weight:700;font-family:inherit;cursor:pointer">&#128190; Guardar</button>';
   h+='</div>';
   // WhatsApp share button
@@ -16135,46 +16186,116 @@ function shareDietWhatsApp(){
   window.open(url,'_blank');
 }
 
-function printDietPlan(){
+/* ── PDF DE DIETA ────────────────────────────────────────────────
+   Documento visual con el logo del centro, el nombre de la clienta y
+   de quien lo elabora. Se abre listo para "Guardar como PDF". */
+function buildDietDoc(plan,meta){
+  meta=meta||{};
+  var client=String(meta.client||'').trim();
+  var pro=String(meta.pro||'').trim();
+  var dt=meta.date?new Date(String(meta.date).length===10?meta.date+'T00:00:00':meta.date):new Date();
+  if(isNaN(dt.getTime()))dt=new Date();
+  var dateStr=dt.toLocaleDateString('es-ES',{day:'numeric',month:'long',year:'numeric'});
+  var nDays=(plan.dias||[]).length;
+  var css=''
+  +'.dp{font-family:-apple-system,"Segoe UI",Helvetica,Arial,sans-serif;color:#22302A;max-width:760px;margin:0 auto;background:#fff;padding:34px 40px 28px;-webkit-print-color-adjust:exact;print-color-adjust:exact;line-height:1.5;text-align:left}'
+  +'.dp *{box-sizing:border-box}'
+  +'.dp-head{text-align:center}'
+  +'.dp-logo{width:150px;height:150px;object-fit:contain;display:block;margin:0 auto -4px}'
+  +'.dp-kicker{font-size:10.5px;letter-spacing:.32em;text-transform:uppercase;color:#B8862B;font-weight:700}'
+  +'.dp-title{font-family:Georgia,"Times New Roman",serif;font-size:28px;line-height:1.2;color:#1F3A2E;margin:8px 0 6px;font-weight:700}'
+  +'.dp-desc{font-family:Georgia,"Times New Roman",serif;font-style:italic;font-size:13.5px;color:#55695E;max-width:520px;margin:0 auto}'
+  +'.dp-rule{height:1px;background:linear-gradient(90deg,transparent,#C9A14A 20%,#C9A14A 80%,transparent);margin:18px 0}'
+  +'.dp-meta{display:flex;border:1px solid #E9DFC6;border-radius:12px;overflow:hidden;background:#FDFAF2;margin-bottom:22px}'
+  +'.dp-meta>div{flex:1;padding:11px 14px;border-left:1px solid #E9DFC6;min-width:0}'
+  +'.dp-meta>div:first-child{border-left:none}'
+  +'.dp-lbl{font-size:9px;letter-spacing:.2em;text-transform:uppercase;color:#B8862B;font-weight:700;margin-bottom:2px}'
+  +'.dp-val{font-size:14px;font-weight:700;color:#1F3A2E;overflow-wrap:anywhere}'
+  +'.dp-day{border:1px solid #DDE7E0;border-radius:14px;margin-bottom:14px;overflow:hidden;break-inside:avoid;page-break-inside:avoid}'
+  +'.dp-day-h{display:flex;align-items:center;gap:12px;background:#1F3A2E;color:#fff;padding:8px 16px}'
+  +'.dp-day-n{font-family:Georgia,"Times New Roman",serif;font-size:16px;font-weight:700;letter-spacing:.04em;white-space:nowrap}'
+  +'.dp-day-l{flex:1;height:1px;background:#C9A14A;opacity:.75}'
+  +'.dp-meal{display:flex;gap:12px;padding:9px 16px;border-top:1px solid #EEF3EF;align-items:flex-start}'
+  +'.dp-meal.first{border-top:none}'
+  +'.dp-ico{width:30px;height:30px;border-radius:50%;background:#F6EFD9;display:flex;align-items:center;justify-content:center;font-size:15px;flex-shrink:0}'
+  +'.dp-meal-l{width:104px;flex-shrink:0;font-size:10px;letter-spacing:.14em;text-transform:uppercase;font-weight:700;color:#2E8260;padding-top:8px}'
+  +'.dp-meal-t{flex:1;font-size:12.5px;color:#22302A;padding-top:5px;min-width:0;overflow-wrap:anywhere}'
+  +'.dp-note{margin:4px 16px 14px;padding:9px 12px;border-left:3px solid #C9A14A;background:#FDFAF2;font-size:11.5px;color:#5B4A1E;border-radius:0 8px 8px 0;font-style:italic}'
+  +'.dp-sec{break-inside:avoid;page-break-inside:avoid;margin-top:22px}'
+  +'.dp-sec-t{font-family:Georgia,"Times New Roman",serif;font-size:17px;color:#1F3A2E;font-weight:700;margin-bottom:10px}'
+  +'.dp-tips{list-style:none;padding:0;margin:0;columns:2;column-gap:24px}'
+  +'.dp-tips li{break-inside:avoid;font-size:12px;padding:0 0 9px 28px;position:relative}'
+  +'.dp-tips li b{position:absolute;left:0;top:0;width:20px;height:20px;border-radius:50%;background:#1F3A2E;color:#E8C97A;font-size:10px;display:flex;align-items:center;justify-content:center;font-weight:700}'
+  +'.dp-box{display:flex;gap:10px;border-radius:12px;padding:11px 14px;font-size:12px;margin-top:10px;break-inside:avoid;page-break-inside:avoid}'
+  +'.dp-box.h{background:#EEF6FB;color:#1F4E6B}.dp-box.s{background:#F3EEF9;color:#4B3A73}'
+  +'.dp-box strong{display:block;font-size:9.5px;letter-spacing:.16em;text-transform:uppercase;margin-bottom:2px}'
+  +'.dp-foot{margin-top:26px;padding-top:14px;border-top:1px solid #E9DFC6;text-align:center;font-size:10px;color:#7C8A82}'
+  +'.dp-foot strong{color:#B8862B;letter-spacing:.2em;text-transform:uppercase;font-size:9.5px;display:block;margin-bottom:4px}'
+  +'.dp-bar{position:sticky;top:0;z-index:5;display:flex;gap:8px;justify-content:center;padding:10px;background:rgba(243,239,230,.96)}'
+  +'.dp-bar button{padding:10px 18px;border-radius:99px;border:none;background:#1F3A2E;color:#fff;font-size:13px;font-weight:700;font-family:inherit;cursor:pointer}'
+  +'.dp-bar button.sec{background:#fff;color:#1F3A2E;border:1.5px solid #1F3A2E}'
+  +'@media (max-width:560px){.dp{padding:22px 16px}.dp-meta{flex-direction:column}.dp-meta>div{border-left:none;border-top:1px solid #E9DFC6}.dp-meta>div:first-child{border-top:none}.dp-meal-l{width:80px}.dp-tips{columns:1}.dp-title{font-size:23px}}'
+  +'@media print{.dp{max-width:none;padding:0}.dp-bar{display:none!important}}';
+  var b='<div class="dp">';
+  b+='<div class="dp-head">';
+  if(typeof APP_LOGO!=='undefined'&&APP_LOGO&&APP_LOGO.length>10)b+='<img class="dp-logo" alt="Centro Cuídate" src="'+APP_LOGO+'">';
+  b+='<div class="dp-kicker">Plan nutricional personalizado</div>';
+  b+='<div class="dp-title">'+esc(plan.titulo||'Tu plan de alimentación')+'</div>';
+  if(plan.descripcion)b+='<div class="dp-desc">'+esc(plan.descripcion)+'</div>';
+  b+='</div><div class="dp-rule"></div>';
+  b+='<div class="dp-meta">';
+  if(client)b+='<div><div class="dp-lbl">Para</div><div class="dp-val">'+esc(client)+'</div></div>';
+  if(pro)b+='<div><div class="dp-lbl">Elaborado por</div><div class="dp-val">'+esc(pro)+'</div></div>';
+  b+='<div><div class="dp-lbl">Fecha</div><div class="dp-val">'+esc(dateStr)+(nDays?' · '+nDays+' días':'')+'</div></div>';
+  b+='</div>';
+  (plan.dias||[]).forEach(function(d,i){
+    b+='<div class="dp-day"><div class="dp-day-h"><span class="dp-day-n">Día '+esc(String(d.dia!=null?d.dia:(i+1)))+'</span><span class="dp-day-l"></span></div>';
+    var first=true;
+    [['🌅','Desayuno',d.desayuno],['🍎','Media mañana',d.media_manana],['🥗','Almuerzo',d.almuerzo],['☕','Merienda',d.merienda],['🌙','Cena',d.cena]].forEach(function(m){
+      if(!m[2])return;
+      b+='<div class="dp-meal'+(first?' first':'')+'"><div class="dp-ico">'+m[0]+'</div><div class="dp-meal-l">'+m[1]+'</div><div class="dp-meal-t">'+esc(String(m[2]))+'</div></div>';
+      first=false;
+    });
+    if(d.notas)b+='<div class="dp-note">'+esc(String(d.notas))+'</div>';
+    b+='</div>';
+  });
+  var tips=(plan.consejos_generales||[]).filter(function(t){return !!t;});
+  if(tips.length){
+    b+='<div class="dp-sec"><div class="dp-sec-t">Consejos para tu día a día</div><ul class="dp-tips">';
+    tips.forEach(function(t,i){b+='<li><b>'+(i+1)+'</b>'+esc(String(t))+'</li>';});
+    b+='</ul></div>';
+  }
+  if(plan.hidratacion)b+='<div class="dp-box h"><div>💧</div><div><strong>Hidratación</strong>'+esc(String(plan.hidratacion))+'</div></div>';
+  if(plan.suplementos_sugeridos)b+='<div class="dp-box s"><div>🌿</div><div><strong>Suplementación sugerida</strong>'+esc(String(plan.suplementos_sugeridos))+'</div></div>';
+  b+='<div class="dp-foot"><strong>Centro Cuídate · Bienestar Integral</strong>Plan orientativo de alimentación'+(client?' preparado para '+esc(client):'')+'. No sustituye el consejo de tu médico.</div>';
+  b+='</div>';
+  var fileTitle='Plan nutricional'+(client?' - '+client:'')+' - Centro Cuídate';
+  return {css:css,body:b,fileTitle:fileTitle};
+}
+
+function printDietPlan(planArg,metaArg){
   var el=document.getElementById('dietResult');
-  var plan=(el&&el._dietPlan)?el._dietPlan:null;
+  var plan=planArg||((el&&el._dietPlan)?el._dietPlan:null);
   if(!plan){showToast('Primero genera una dieta');return;}
+  var meta=metaArg||{};
+  if(!meta.client&&el&&!planArg)meta.client=el._clientName||'';
+  if(!meta.pro){try{meta.pro=(sd().userName||'').trim();}catch(e){}}
+  var doc=buildDietDoc(plan,meta);
   // iOS Safari blocks window.open — use in-page overlay instead
   var isIOS=/iPad|iPhone|iPod/.test(navigator.userAgent)||(/Macintosh/.test(navigator.userAgent)&&'ontouchend' in document);
-  if(isIOS){
-    printDietPlanIOS(plan);
-    return;
-  }
-  var html='<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Plan nutricional</title>';
-  html+='<style>body{font-family:-apple-system,Helvetica,Arial,sans-serif;font-size:12px;color:var(--text);padding:24px;max-width:700px;margin:0 auto}';
-  html+='.hdr{border-bottom:2px solid #2ECC8E;padding-bottom:12px;margin-bottom:16px}.title{font-size:20px;font-weight:900;color:var(--green)}';
-  html+='.day{border:1px solid #E4EFE8;border-radius:10px;padding:12px;margin-bottom:10px}.day-num{font-weight:700;color:var(--green-dark);margin-bottom:8px;font-size:13px}';
-  html+='.meal{display:flex;gap:6px;margin-bottom:5px;font-size:11px}.meal-lbl{font-weight:700;color:var(--text2);min-width:90px}';
-  html+='.tip{background:var(--green-light);border-radius:8px;padding:8px 10px;margin-bottom:6px;font-size:11px;color:var(--green-dark);font-weight:600}';
-  html+='.note{background:var(--surface2);border-radius:6px;padding:6px 8px;font-size:10px;color:var(--text2);margin-top:5px}';
-  html+='@media print{.noprint{display:none}}</style></head><body>';
-  html+='<div class="hdr"><div style="font-size:10px;color:var(--text3);letter-spacing:.15em;text-transform:uppercase">Centro Cuídate · Plan Nutricional</div>';
-  html+='<div class="title">'+(plan.titulo||'Plan personalizado')+'</div>';
-  if(plan.descripcion)html+='<div style="font-size:12px;color:var(--text2);margin-top:4px">'+plan.descripcion+'</div></div>';
-  (plan.dias||[]).forEach(function(d){
-    html+='<div class="day"><div class="day-num">DÍA '+d.dia+'</div>';
-    [['🌅','Desayuno',d.desayuno],['🍎','Media mañana',d.media_manana],['🥗','Almuerzo',d.almuerzo],['☕','Merienda',d.merienda],['🌙','Cena',d.cena]].forEach(function(m){
-      if(m[2])html+='<div class="meal"><span class="meal-lbl">'+m[1]+':</span><span>'+m[2]+'</span></div>';
-    });
-    if(d.notas)html+='<div class="note">💡 '+d.notas+'</div>';
-    html+='</div>';
-  });
-  if(plan.consejos_generales){plan.consejos_generales.forEach(function(c){html+='<div class="tip">• '+c+'</div>';});}
-  if(plan.hidratacion)html+='<div class="tip">💧 '+plan.hidratacion+'</div>';
-  html+='<div style="margin-top:16px;text-align:center;font-size:10px;color:var(--text3);border-top:1px solid #E4EFE8;padding-top:10px">Centro Cuídate · Bienestar Integral · '+new Date().toLocaleDateString('es-ES')+'</div>';
-  html+='</body></html>';
-  var w=window.open('','_blank','width=780,height=900');
-  if(w){w.document.write(html);w.document.close();w.focus();setTimeout(function(){w.print();},500);}
-  else{printDietPlanIOS(plan);}
+  if(isIOS){printDietPlanIOS(plan,doc);return;}
+  var html='<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>'+esc(doc.fileTitle)+'</title>';
+  html+='<style>@page{size:A4;margin:13mm}html,body{margin:0;background:#F3EFE6}@media print{html,body{background:#fff}}'+doc.css+'</style></head><body>';
+  html+='<div class="dp-bar"><button onclick="window.print()">⬇ Guardar como PDF / Imprimir</button><button class="sec" onclick="window.close()">Cerrar</button></div>';
+  html+=doc.body+'</body></html>';
+  var w=window.open('','_blank');
+  if(w){w.document.write(html);w.document.close();w.focus();setTimeout(function(){try{w.print();}catch(e){}},700);}
+  else{printDietPlanIOS(plan,doc);}
 }
 
 function saveDietToClient(clientId){
   var el=document.getElementById('dietResult');if(!el||!el._dietPlan)return;
+  if(el._autoDietId){showToast('\u2713 Ya est\u00e1 guardada en la ficha del cliente');return;}
   for(var i=0;i<sd().clients.length;i++){
     if(sd().clients[i].id===clientId){
       if(!sd().clients[i].diets)sd().clients[i].diets=[];
@@ -16268,16 +16389,8 @@ function printSavedDiet(clientId,revIdx){
   var c=null;for(var i=0;i<(sd().clients||[]).length;i++)if(sd().clients[i].id===clientId){c=sd().clients[i];break;}
   if(!c)return;
   var diets=(c.diets||[]).slice().reverse();
-  var d=diets[revIdx];if(!d)return;
-  // Temporarily set the plan for printing
-  var tmpEl=document.getElementById('dietResult');
-  if(!tmpEl){
-    // Create a hidden container
-    var tmp=document.createElement('div');tmp.id='dietResultTemp';tmp.style.display='none';document.body.appendChild(tmp);
-    tmpEl=tmp;
-  }
-  tmpEl._dietPlan=d.plan;
-  printDietPlan();
+  var d=diets[revIdx];if(!d||!d.plan)return;
+  printDietPlan(d.plan,{client:c.name||'',date:d.date});
 }
 
 function delSavedDiet(clientId,dietId){
@@ -16368,38 +16481,17 @@ function getCurrentThemeMode(){
 /* ══════════════════════════════════════════
    [SEC-45] IMPRIMIR DIETA EN IOS (sin window.open)
    ══════════════════════════════════════════ */
-function printDietPlanIOS(plan){
-  // For iOS: create a printable div in the page instead of new window
+function printDietPlanIOS(plan,doc){
+  // iOS / ventanas bloqueadas: se muestra dentro de la propia app
+  if(!doc){var m={};try{m.pro=(sd().userName||'').trim();}catch(e){}doc=buildDietDoc(plan,m);}
   var old=document.getElementById('__dietPrint');
   if(old)old.parentNode.removeChild(old);
   var div=document.createElement('div');
   div.id='__dietPrint';
-  div.style.cssText='position:fixed;inset:0;z-index:9999;background:#fff;overflow-y:auto;padding:20px;';
-  var html='<button onclick="this.parentNode.parentNode.removeChild(this.parentNode)" style="position:fixed;top:12px;right:12px;width:36px;height:36px;border-radius:50%;border:none;background:var(--text);color:#fff;font-size:18px;cursor:pointer;z-index:10000" aria-label="Cerrar">×</button>';
-  html+='<button onclick="window.print()" style="position:fixed;top:12px;right:56px;padding:8px 16px;border-radius:20px;border:none;background:var(--green);color:#fff;font-size:13px;font-weight:700;cursor:pointer;z-index:10000">🖨 Imprimir</button>';
-  html+='<div style="font-family:-apple-system,Helvetica,Arial,sans-serif;font-size:13px;color:var(--text);max-width:680px;margin:0 auto;padding-top:48px">';
-  html+='<div style="font-size:10px;color:var(--text3);letter-spacing:.15em;text-transform:uppercase;margin-bottom:4px">Centro Cuídate · Plan Nutricional</div>';
-  html+='<div style="font-size:20px;font-weight:900;color:var(--green);margin-bottom:4px">'+esc(plan.titulo||'Plan personalizado')+'</div>';
-  if(plan.descripcion)html+='<div style="font-size:12px;color:var(--text2);margin-bottom:16px">'+esc(plan.descripcion)+'</div>';
-  html+='<hr style="border:none;border-top:2px solid #2ECC8E;margin-bottom:16px">';
-  (plan.dias||[]).forEach(function(d){
-    html+='<div style="border:1px solid #E4EFE8;border-radius:10px;padding:12px;margin-bottom:10px">';
-    html+='<div style="font-weight:700;color:var(--green-dark);margin-bottom:8px">DÍA '+d.dia+'</div>';
-    [['🌅','Desayuno',d.desayuno],['🍎','Media mañana',d.media_manana],['🥗','Almuerzo',d.almuerzo],['☕','Merienda',d.merienda],['🌙','Cena',d.cena]].forEach(function(m){
-      if(m[2])html+='<div style="display:flex;gap:8px;margin-bottom:5px;font-size:12px"><span style="min-width:110px;font-weight:700;color:var(--text2)">'+m[1]+':</span><span>'+esc(m[2])+'</span></div>';
-    });
-    if(d.notas)html+='<div style="background:var(--green-light);border-radius:6px;padding:6px 9px;margin-top:6px;font-size:11px;color:var(--green-dark)">💡 '+esc(d.notas)+'</div>';
-    html+='</div>';
-  });
-  if(plan.consejos_generales&&plan.consejos_generales.length){
-    html+='<div style="background:var(--green-light);border-radius:10px;padding:12px;margin-bottom:10px">';
-    html+='<div style="font-weight:700;color:var(--green-dark);margin-bottom:6px">💡 Consejos generales</div>';
-    plan.consejos_generales.forEach(function(c){html+='<div style="font-size:12px;color:var(--text2);margin-bottom:3px">• '+esc(c)+'</div>';});
-    html+='</div>';
-  }
-  if(plan.hidratacion)html+='<div style="font-size:12px;color:var(--blue);font-weight:600;margin-bottom:6px">💧 '+esc(plan.hidratacion)+'</div>';
-  html+='<div style="margin-top:16px;text-align:center;font-size:10px;color:var(--text3);border-top:1px solid #E4EFE8;padding-top:10px">Centro Cuídate · Bienestar Integral · '+new Date().toLocaleDateString('es-ES')+'</div>';
-  html+='</div>';
+  div.style.cssText='position:fixed;inset:0;z-index:9999;background:#F3EFE6;overflow-y:auto;-webkit-overflow-scrolling:touch;';
+  var html='<style>'+doc.css+'@media print{body>*:not(#__dietPrint){display:none!important}#__dietPrint{position:static!important;overflow:visible!important;background:#fff!important}}</style>';
+  html+='<div class="dp-bar"><button onclick="window.print()">⬇ Guardar como PDF / Imprimir</button><button class="sec" onclick="var n=document.getElementById(\'__dietPrint\');if(n)n.parentNode.removeChild(n)">Cerrar</button></div>';
+  html+=doc.body;
   div.innerHTML=html;
   document.body.appendChild(div);
 }
@@ -17793,6 +17885,14 @@ function initSheetSwipeDismiss(){
     var sheet=e.target.closest('.sheet');
     if(!sheet)return;
     var startY=e.touches[0].clientY,startX=e.touches[0].clientX;
+    // FIX: el gesto de cerrar sólo empieza en la franja superior de la ventana
+    // (tirador/título) y con el contenido arriba del todo. Antes, cualquier
+    // desplazamiento hacia abajo dentro de la ventana la cerraba.
+    var _top=sheet.getBoundingClientRect().top;
+    if(startY-_top>64)return;
+    if(sheet.scrollTop>0)return;
+    var _sc=e.target.closest('.sh-body');
+    if(_sc&&_sc.scrollTop>0)return;
     var isDragging=false,threshold=80;
     function onMove(ev){
       var dy=ev.touches[0].clientY-startY;

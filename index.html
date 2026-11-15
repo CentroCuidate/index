@@ -5500,6 +5500,10 @@ function fdate(iso){if(!iso)return'';var d=new Date(iso+'T00:00:00');return d.ge
 function esc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/'/g,'&#39;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
 /* SEGURIDAD: los ids/claves que llegan de la reserva pública se insertan en
    atributos onclick. Solo se aceptan los que tienen un formato seguro. */
+/* PRIVACIDAD: campos de salud (peso, altura, pesajes, fotos de progreso)
+   desactivados. Poner a true para volver a mostrarlos. Los datos que ya
+   existieran no se borran; simplemente no se muestran ni se piden. */
+var HEALTH_FIELDS_ENABLED=false;
 function _safeKey(k){return typeof k==='string'&&/^[A-Za-z0-9_\-]{1,80}$/.test(k);}
 
 /* ── VALIDACIÓN DE TELÉFONO ──────────────────────────────────────
@@ -8842,13 +8846,21 @@ function renderSettings(){
 }
 
 var _DEFAULT_AI_KEY=''; /* Configura tu clave en Ajustes > IA dentro de la app */
+var _aiKeyCache=''; // clave descifrada en memoria (solo esta sesión)
 function getAnthropicKey(){
   // sync fallback — encrypted keys are fetched async via getAnthropicKeyAsync()
   try{
     var raw=localStorage.getItem('ccuida_anthropic_key');
     if(!raw)return _DEFAULT_AI_KEY;
-    // If it looks like a hex-encoded encrypted blob, return placeholder — caller must use async
-    if(/^[0-9a-f]{48,}$/i.test(raw))return _DEFAULT_AI_KEY;
+    // Cifrada: devolver la copia descifrada en memoria si ya la tenemos
+    if(/^[0-9a-f]{48,}$/i.test(raw)){
+      if(!_aiKeyCache){
+        getAnthropicKeyAsync().then(function(k){
+          if(k&&!_aiKeyCache){_aiKeyCache=k;try{if(currentPage==='settings')renderSettings();}catch(e){}}
+        }).catch(function(){});
+      }
+      return _aiKeyCache||_DEFAULT_AI_KEY;
+    }
     return raw.trim()||_DEFAULT_AI_KEY;
   }catch(e){return _DEFAULT_AI_KEY;}
 }
@@ -8858,6 +8870,7 @@ async function getAnthropicKeyAsync(){
     if(!raw)return _DEFAULT_AI_KEY;
     if(/^[0-9a-f]{48,}$/i.test(raw)){
       var dec=await _decryptCred(raw).catch(function(){return null;});
+      if(dec&&dec.trim())_aiKeyCache=dec.trim();
       return dec&&dec.trim()?dec.trim():_DEFAULT_AI_KEY;
     }
     return raw.trim()||_DEFAULT_AI_KEY;
@@ -8867,6 +8880,7 @@ async function getAnthropicKeyAsync(){
 function saveAnthropicKey(){
   var val=((document.getElementById('apiKeyInput')||{}).value||'').trim();
   if(!val||val.indexOf('\u2022')>=0){showToast('Introduce una clave válida');return;}
+  _aiKeyCache=val;
   // S1: encrypt before storing in localStorage
   _encryptCred(val).then(function(enc){
     try{localStorage.setItem('ccuida_anthropic_key',enc);}catch(e){}
@@ -8882,6 +8896,7 @@ function saveAnthropicKey(){
 function clearAnthropicKey(){
   if(!confirm('\u00bfBorrar la clave API de todos tus dispositivos?'))return;
   try{localStorage.removeItem('ccuida_anthropic_key');}catch(e){}
+  _aiKeyCache='';
   // Remove from Firebase too
   if(fbDB&&FB_CONFIG_PATH){
     fbDB.ref(FB_CONFIG_PATH+'/anthropicKey').remove().catch(function(){});
@@ -10092,7 +10107,7 @@ function openClientDetail(id){
   var totalSpent=purchases.reduce(function(a,b){return a+(b.totalRevenue||0);},0);
   var appts=(sd().appointments||[]).filter(function(a){return a.clientId===id;}).sort(function(a,b){return b.date.localeCompare(a.date);});
   var nextAppt=appts.filter(function(a){return a.date>=new Date().toISOString().slice(0,10);})[0];
-  var perdidaPeso=(c.pesoInicial&&c.pesoActual)?(c.pesoActual-c.pesoInicial):null;
+  var perdidaPeso=(HEALTH_FIELDS_ENABLED&&c.pesoInicial&&c.pesoActual)?(c.pesoActual-c.pesoInicial):null;
   var h='<div class="ovl" onclick="closeMod(event)"><div class="sheet" onclick="event.stopPropagation()" style="max-height:92vh;overflow-y:auto">';
   h+='<div class="sh-handle"></div>';
   h+='<div class="cli-detail-header">';
@@ -10112,7 +10127,7 @@ function openClientDetail(id){
   h+='</div>';
   h+='<div class="sh-body" style="padding-top:12px">';
   // Salud y seguimiento
-  if(c.pesoInicial||c.pesoActual||c.altura){
+  if(HEALTH_FIELDS_ENABLED&&(c.pesoInicial||c.pesoActual||c.altura)){
     h+='<div style="background:var(--green-light);border-radius:var(--r-md);padding:12px 14px;margin-bottom:12px">';
     h+='<div style="font-size:11px;font-weight:700;color:var(--green-dark);text-transform:uppercase;letter-spacing:.08em;margin-bottom:8px">&#129340; Seguimiento de salud</div>';
     h+='<div style="display:flex;gap:12px;flex-wrap:wrap">';
@@ -10157,9 +10172,9 @@ function openClientDetail(id){
   }else{h+='<div style="text-align:center;padding:16px;color:var(--text3);font-size:13px;font-weight:600">Sin compras registradas a\u00fan</div>';}
   h+='<div class="sh-actions" style="flex-wrap:wrap;gap:6px">';
   if(c.phone)h+='<button class="sbtn teal" type="button" onclick="window.open(waUrl(\''+c.phone.replace(/[\s\-\+]/g,'')+'\'),\'_blank\')">&#128172; WA</button>';
-  h+='<button class="sbtn" type="button" onclick="shareClientProgress(\''+c.id+'\')" style="background:linear-gradient(135deg,rgba(31,170,118,.12),rgba(201,149,42,.06));color:var(--green-dark);border:1.5px solid rgba(31,170,118,.32)">&#127775; Progreso</button>';
+  if(HEALTH_FIELDS_ENABLED)h+='<button class="sbtn" type="button" onclick="shareClientProgress(\''+c.id+'\')" style="background:linear-gradient(135deg,rgba(31,170,118,.12),rgba(201,149,42,.06));color:var(--green-dark);border:1.5px solid rgba(31,170,118,.32)">&#127775; Progreso</button>';
   h+='<button class="sbtn coral" type="button" onclick="exportClientPDF(\''+c.id+'\')">&#128196; PDF</button>';
-  h+='<button class="sbtn" type="button" onclick="openClientPhotosModal(\''+c.id+'\')" style="background:var(--purple-light);color:var(--purple);border:1.5px solid rgba(124,92,191,.25)">&#128247; Fotos</button>';
+  if(HEALTH_FIELDS_ENABLED)h+='<button class="sbtn" type="button" onclick="openClientPhotosModal(\''+c.id+'\')" style="background:var(--purple-light);color:var(--purple);border:1.5px solid rgba(124,92,191,.25)">&#128247; Fotos</button>';
   h+='<button class="sbtn" type="button" onclick="openDietGeneratorModal(\''+c.id+'\')" style="background:var(--green-light);color:var(--green-dark);border:1.5px solid rgba(46,204,142,.25)">&#129302; Dieta</button>';
   if((c.diets||[]).length)h+='<button class="sbtn" type="button" onclick="openSavedDietsModal(\''+c.id+'\')" style="background:var(--blue-light);color:var(--blue);border:1.5px solid rgba(26,91,170,.2)">&#128190; '+c.diets.length+'</button>';
   h+='<button class="sbtn" type="button" onclick="openAttendanceModal(\''+c.id+'\')" style="background:var(--surface2);color:var(--text2);border:1.5px solid var(--border2)">&#128203; Asistencia</button>';
@@ -10220,7 +10235,7 @@ function openClientDetail(id){
   h+='<div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:8px">';
   h+='<button class="sbtn" type="button" onclick="openAddMedidasModal(\''+c.id+'\')" style="background:var(--teal-light);color:var(--teal);border-color:rgba(0,188,188,.2)">&#128207; Medidas</button>';
   h+='<button class="sbtn" type="button" onclick="openEditLogModal(\''+c.id+'\')" style="background:var(--surface2);color:var(--text2);border:1.5px solid var(--border2)">&#128221; Historial</button>';
-  h+='<button class="sbtn gho" type="button" onclick="addPesaje(\''+c.id+'\')">&#9878; Peso</button>';
+  if(HEALTH_FIELDS_ENABLED)h+='<button class="sbtn gho" type="button" onclick="addPesaje(\''+c.id+'\')">&#9878; Peso</button>';
   h+='<button class="sbtn pri" type="button" onclick="closeMod();setTimeout(function(){openClientModal(\''+c.id+'\')},60)">&#9998; Editar</button>';
   h+='</div></div></div></div>';
   document.getElementById('modRoot').innerHTML=h;
@@ -13071,9 +13086,10 @@ function openClientModalFull(id){
     h+='<option value="'+esc(o)+'"'+(c&&c.objetivo===o?' selected':'')+'>'+esc(o)+'</option>';
   });
   h+='</select>';
-  h+='<div class="row2"><div><span class="sh-lbl">Peso inicial (kg)</span><input id="cliPesoInicial" class="fld" type="number" min="0" step="0.1" inputmode="decimal" placeholder="65,0" value="'+(c&&c.pesoInicial?c.pesoInicial:'')+'"></div>';
-  h+='<div><span class="sh-lbl">Peso actual (kg)</span><input id="cliPesoActual" class="fld" type="number" min="0" step="0.1" inputmode="decimal" placeholder="63,5" value="'+(c&&c.pesoActual?c.pesoActual:'')+'"></div></div>';
-  h+='<div class="row2"><div><span class="sh-lbl">Altura (cm)</span><input id="cliAltura" class="fld" type="number" min="0" step="1" inputmode="numeric" placeholder="165" value="'+(c&&c.altura?c.altura:'')+'"></div>';
+  if(HEALTH_FIELDS_ENABLED)h+='<div class="row2"><div><span class="sh-lbl">Peso inicial (kg)</span><input id="cliPesoInicial" class="fld" type="number" min="0" step="0.1" inputmode="decimal" placeholder="65,0" value="'+(c&&c.pesoInicial?c.pesoInicial:'')+'"></div>';
+  if(HEALTH_FIELDS_ENABLED)h+='<div><span class="sh-lbl">Peso actual (kg)</span><input id="cliPesoActual" class="fld" type="number" min="0" step="0.1" inputmode="decimal" placeholder="63,5" value="'+(c&&c.pesoActual?c.pesoActual:'')+'"></div></div>';
+  if(!HEALTH_FIELDS_ENABLED)h+='<div class="row2">';
+  if(HEALTH_FIELDS_ENABLED)h+='<div class="row2"><div><span class="sh-lbl">Altura (cm)</span><input id="cliAltura" class="fld" type="number" min="0" step="1" inputmode="numeric" placeholder="165" value="'+(c&&c.altura?c.altura:'')+'"></div>';
   h+='<div><span class="sh-lbl">Sesiones presoterapia</span><input id="cliSesiones" class="fld" type="number" min="0" step="1" inputmode="numeric" placeholder="0" value="'+(c&&c.sesiones?c.sesiones:'')+'"></div></div>';
   h+='</div>';
   // Sección 3: Notas + Referidora
@@ -13530,13 +13546,14 @@ function saveClientFull(id){
   if(!sd().clients)sd().clients=[];
   var referidoPor=((document.getElementById('cliReferidoPor')||{}).value||'');
   var obj={name:name,phone:phone,birthday:birthday,objetivo:objetivo,referidoPor:referidoPor||undefined,pesoInicial:pesoInicial||undefined,pesoActual:pesoActual||undefined,altura:altura||undefined,sesiones:sesiones||0,notes:notes,nextAppt:nextAppt};
+  if(!HEALTH_FIELDS_ENABLED){delete obj.pesoInicial;delete obj.pesoActual;delete obj.altura;}
   if(id){
     for(var i=0;i<sd().clients.length;i++){
       if(sd().clients[i].id===id){
         var prev=sd().clients[i];
         // Log changed fields
         ['name','phone','birthday','objetivo','pesoInicial','pesoActual','altura','notes'].forEach(function(f){
-          if(String(prev[f]||'')!==String(obj[f]||''))logClientEdit(id,f,prev[f],obj[f]);
+          if((f in obj)&&String(prev[f]||'')!==String(obj[f]||''))logClientEdit(id,f,prev[f],obj[f]);
         });
         Object.assign(sd().clients[i],obj);
         break;
@@ -14718,7 +14735,7 @@ function exportClientPDF(clientId){
   var appts=(sd().appointments||[]).filter(function(a){return a.clientId===c.id;}).sort(function(a,b){return b.date.localeCompare(a.date);});
   var totalSpent=purchases.reduce(function(a,v){return a+(v.totalRevenue||0);},0);
   var sedeI=SEDES[activeSede]||SEDES.cc;
-  var perdida=(c.pesoInicial&&c.pesoActual)?((c.pesoActual-c.pesoInicial).toFixed(1)):null;
+  var perdida=(HEALTH_FIELDS_ENABLED&&c.pesoInicial&&c.pesoActual)?((c.pesoActual-c.pesoInicial).toFixed(1)):null;
   var now=new Date().toLocaleDateString('es-ES');
   var sedeColor=sedeI.color;
   var html='<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Ficha '+c.name+'</title>';
@@ -14756,11 +14773,11 @@ function exportClientPDF(clientId){
   html+='</div>';
   // Salud
   html+='<div class="card"><div class="card-title">⚖️ Seguimiento salud</div>';
-  if(c.pesoInicial)html+='<div class="kv"><span class="kv-lbl">Peso inicial</span><span class="kv-val">'+c.pesoInicial+' kg</span></div>';
-  if(c.pesoActual)html+='<div class="kv"><span class="kv-lbl">Peso actual</span><span class="kv-val">'+c.pesoActual+' kg</span></div>';
+  if(HEALTH_FIELDS_ENABLED&&c.pesoInicial)html+='<div class="kv"><span class="kv-lbl">Peso inicial</span><span class="kv-val">'+c.pesoInicial+' kg</span></div>';
+  if(HEALTH_FIELDS_ENABLED&&c.pesoActual)html+='<div class="kv"><span class="kv-lbl">Peso actual</span><span class="kv-val">'+c.pesoActual+' kg</span></div>';
   if(perdida!==null)html+='<div class="kv"><span class="kv-lbl">Diferencia</span><span class="kv-val '+(parseFloat(perdida)<=0?'pos':'neg')+'">'+perdida+' kg</span></div>';
-  if(c.pesoActual&&c.altura){var imc=(c.pesoActual/((c.altura/100)*(c.altura/100))).toFixed(1);html+='<div class="kv"><span class="kv-lbl">IMC</span><span class="kv-val">'+imc+'</span></div>';}
-  if(c.altura)html+='<div class="kv"><span class="kv-lbl">Altura</span><span class="kv-val">'+c.altura+' cm</span></div>';
+  if(HEALTH_FIELDS_ENABLED&&c.pesoActual&&c.altura){var imc=(c.pesoActual/((c.altura/100)*(c.altura/100))).toFixed(1);html+='<div class="kv"><span class="kv-lbl">IMC</span><span class="kv-val">'+imc+'</span></div>';}
+  if(HEALTH_FIELDS_ENABLED&&c.altura)html+='<div class="kv"><span class="kv-lbl">Altura</span><span class="kv-val">'+c.altura+' cm</span></div>';
   html+='</div>';
   html+='</div>';
   // Global stats
@@ -14771,7 +14788,7 @@ function exportClientPDF(clientId){
   // Notes
   if(c.notes){html+='<div class="card" style="margin-bottom:14px"><div class="card-title">📝 Plan nutricional / Notas</div><div style="font-size:12px;color:var(--text2);line-height:1.7;margin-top:4px">'+c.notes.replace(/\n/g,'<br>')+'</div></div>';}
   // Weight evolution
-  if(c.pesajes&&c.pesajes.length>=2){
+  if(HEALTH_FIELDS_ENABLED&&c.pesajes&&c.pesajes.length>=2){
     html+='<h3>📈 Evolución de peso</h3>';
     html+='<table><thead><tr><th>Fecha</th><th>Peso (kg)</th><th>Variación</th></tr></thead><tbody>';
     c.pesajes.slice().reverse().forEach(function(p,i,arr){
@@ -15904,7 +15921,7 @@ function openDietGeneratorModal(clientId){
   }
 }
 
-function generateDiet(clientId){
+async function generateDiet(clientId){
   var days=parseInt(((document.getElementById('diet_days')||{}).value)||'7',10);
   var goal=((document.getElementById('diet_goal')||{}).value||'perder peso');
   var allergies=((document.getElementById('diet_allergies')||{}).value||'').trim();
@@ -15923,8 +15940,8 @@ function generateDiet(clientId){
   var prompt='Eres un nutricionista experto en centros de bienestar, presoterapia y productos Herbalife. ';
   prompt+='Crea un plan nutricional completo de '+days+' días para objetivo: '+goal+'. ';
   if(c){
-    if(c.pesoActual)prompt+='Peso actual: '+c.pesoActual+' kg. ';
-    if(c.altura)prompt+='Altura: '+c.altura+' cm. ';
+    if(HEALTH_FIELDS_ENABLED&&c.pesoActual)prompt+='Peso actual: '+c.pesoActual+' kg. ';
+    if(HEALTH_FIELDS_ENABLED&&c.altura)prompt+='Altura: '+c.altura+' cm. ';
     if(c.objetivo)prompt+='Objetivo principal: '+c.objetivo+'. ';
   }
   if(allergies)prompt+='Alergias e intolerancias: '+allergies.slice(0,200)+'. ';
@@ -15932,7 +15949,9 @@ function generateDiet(clientId){
   prompt+='\n\nIMPORTANTE: Responde ÚNICAMENTE con un objeto JSON válido, sin texto antes ni después, sin bloques de código markdown, sin explicaciones. El JSON debe tener exactamente esta estructura:\n';
   prompt+='{"titulo":"Nombre del plan","descripcion":"Descripción breve motivadora","dias":[{"dia":1,"desayuno":"texto","media_manana":"texto","almuerzo":"texto","merienda":"texto","cena":"texto","notas":"consejo breve del día"}],"consejos_generales":["consejo1","consejo2","consejo3"],"hidratacion":"recomendación de agua","suplementos_sugeridos":"suplementos opcionales"}';
 
-  var apiKey=getAnthropicKey();
+  // FIX: la clave se guarda cifrada; hay que descifrarla (antes se leía en
+  // síncrono y siempre salía vacía, por eso pedía configurarla una y otra vez)
+  var apiKey=await getAnthropicKeyAsync();
   if(!apiKey){
     if(resultEl)resultEl.innerHTML='<div style="padding:14px 16px;background:var(--amber-light);border-radius:var(--r-md);border:1px solid rgba(217,119,6,.2)">'
       +'<div style="font-size:13px;font-weight:700;color:var(--amber);margin-bottom:6px">&#128273; Clave API necesaria</div>'

@@ -4288,6 +4288,7 @@ function normalizeFBData(d){
       if(!Array.isArray(s.ventas))s.ventas=fbObjToArr(s.ventas);
       else s.ventas=s.ventas.filter(function(v){return v!=null&&v.id;});
       if(!Array.isArray(s.cheques))s.cheques=fbObjToArr(s.cheques);
+      if(s.apuntes!==undefined&&!Array.isArray(s.apuntes))s.apuntes=fbObjToArr(s.apuntes);
       if(!Array.isArray(s.clients))s.clients=fbObjToArr(s.clients);
       if(!Array.isArray(s.appointments))s.appointments=fbObjToArr(s.appointments);
       if(!Array.isArray(s.gastos))s.gastos=fbObjToArr(s.gastos);
@@ -5505,7 +5506,7 @@ function esc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/"/g,'
    existieran no se borran; simplemente no se muestran ni se piden. */
 var HEALTH_FIELDS_ENABLED=false;
 /* Versión de la app. La sella tools/stamp-version.sh antes de cada publicación. */
-var APP_BUILD='2026.11.15-0107';
+var APP_BUILD='2026.11.16-2149';
 var _updShown=false;
 function checkForAppUpdate(){
   if(_updShown||APP_BUILD==='dev')return;
@@ -6837,6 +6838,7 @@ function saveNewClient(){
 function cancelActiveClient(){
   activeClient=null;
   cart=[];
+  _resetVentaEditState();
   updateCartBar();
   closeMod();
   renderVentasList();
@@ -7323,6 +7325,155 @@ function toggleOrderPanel(){}
 function finalizarPedido(){openFinalizeModal();}
 
 /* ═══ MODAL FINALIZAR PEDIDO ═══ */
+/* ══════════════════════════════════════════════════════════════
+   EDITAR VENTAS Y APUNTES POR CHEQUE
+   - Editar: la venta se carga en el pedido; al guardar se devuelve el
+     stock de la versión anterior y se aplica el de la nueva. Si se
+     cancela, la venta original queda intacta.
+   - Apunte por cheque: queda anotado con sus productos en sd().apuntes.
+     No descuenta stock, no suma en facturación ni cuenta como venta.
+   ══════════════════════════════════════════════════════════════ */
+var _editingVenta=null;   // {kind:'venta'|'apunte', id, num}
+var _chequeMode=false;
+var _checkoutPrefill=null; // {note,date,pay,disc,ts}
+
+function _captureCheckoutDraft(){
+  var g=function(id){var e=document.getElementById(id);return e?e.value:undefined;};
+  var note=g('checkoutNote'),date=g('checkoutDate');
+  if(note===undefined&&date===undefined)return; // la ventana del pedido no está abierta
+  _checkoutPrefill={note:note||'',date:date||'',pay:g('checkoutPayMethod')||'',disc:g('checkoutDiscount')||'',ts:Date.now()};
+}
+function _applyCheckoutPrefill(){
+  var p=_checkoutPrefill;if(!p)return;
+  // Un borrador antiguo no debe colarse en un pedido nuevo
+  if(!_editingVenta&&(Date.now()-(p.ts||0))>10*60*1000){_checkoutPrefill=null;return;}
+  var s=function(id,v){var e=document.getElementById(id);if(e&&v!=null&&v!=='')e.value=v;};
+  s('checkoutNote',p.note);s('checkoutDate',p.date);
+  if(p.disc&&p.disc!=='0')s('checkoutDiscount',p.disc);
+  if(p.pay){
+    if(document.getElementById('pm_'+p.pay)){try{selectPayMethod(p.pay);}catch(e){}}
+    s('checkoutPayMethod',p.pay);
+  }
+}
+function _resetVentaEditState(){_editingVenta=null;_chequeMode=false;_checkoutPrefill=null;}
+function setChequeMode(on){_captureCheckoutDraft();_chequeMode=!!on;openFinalizeModal();}
+
+function _addStock(productId,qty){
+  if(!qty)return;
+  for(var j=0;j<data.products.length;j++){
+    if(data.products[j].id===productId){data.products[j].stock=(data.products[j].stock||0)+qty;return;}
+  }
+}
+/* Devuelve al stock lo que descontó una venta. Usa los movimientos de stock
+   de esa venta (cubren kits y servicios); si es antigua y no tiene, usa las líneas. */
+function _revertVentaStock(v){
+  var isMov=function(m){return m&&m.type==='venta'&&m.ventaNum&&m.ventaNum===v.ventaNum&&m.date===v.date;};
+  var movs=(data.stockMovements||[]).filter(isMov);
+  if(movs.length){
+    movs.forEach(function(m){_addStock(m.productId,Math.abs(m.qty||0));});
+    data.stockMovements=data.stockMovements.filter(function(m){return !isMov(m);});
+    return;
+  }
+  (v.items||[]).forEach(function(it){
+    if(it.isService){(it.linkedProducts||[]).forEach(function(lp){_addStock(lp.productId,lp.qty||0);});return;}
+    _addStock(it.productId,it.qty||0);
+  });
+}
+/* Quita el registro original que se está editando (devolviendo su stock si era venta). */
+function _removeOriginalForEdit(ed){
+  var arr,i;
+  if(ed.kind==='apunte'){
+    arr=sd().apuntes||[];
+    for(i=0;i<arr.length;i++)if(arr[i]&&arr[i].id===ed.id){var a=arr[i];arr.splice(i,1);return {rec:a,idx:i};}
+    return null;
+  }
+  arr=sd().ventas||[];
+  for(i=0;i<arr.length;i++)if(arr[i]&&arr[i].id===ed.id){
+    var v=arr[i];
+    _revertVentaStock(v);
+    arr.splice(i,1);
+    return {rec:v,idx:i};
+  }
+  return null;
+}
+function _startVentaEdit(kind,rec){
+  var num=kind==='venta'?(rec.ventaNum||''):(rec.num||'');
+  function go(){
+    cart=(rec.items||[]).map(function(it){
+      return {productId:it.productId,productName:it.productName,cat:it.cat,qty:Number(it.qty)||1,
+        sellPrice:Number(it.sellPrice)||0,costPrice:Number(it.costPrice)||0,
+        isService:!!it.isService,linkedProducts:it.linkedProducts||[]};
+    });
+    activeClient={id:rec.clientId||'',name:rec.clientName||'',phone:rec.clientPhone||''};
+    _editingVenta={kind:kind,id:rec.id,num:num};
+    _chequeMode=(kind==='apunte');
+    _checkoutPrefill={note:rec.note||'',date:rec.date||'',pay:rec.payMethod||'',disc:rec.discount?String(rec.discount):'',ts:Date.now()};
+    closeMod();
+    try{goPage('ventas');}catch(e){}
+    updateCartBar();renderVentasList();
+    showToast('✏️ Editando '+num+' · añade o quita productos y guarda',5000);
+    setTimeout(openFinalizeModal,350);
+  }
+  if(cart.length&&!(_editingVenta&&_editingVenta.id===rec.id)){
+    mdcConfirm('Tienes un pedido a medias. Al editar <strong>'+esc(num)+'</strong> se vaciará.','Editar','Sí, editar',go);
+  }else go();
+}
+function editVenta(ventaId){
+  var v=(sd().ventas||[]).find(function(x){return x&&x.id===ventaId;});
+  if(!v)return;
+  if(v.anulada){showToast('Una venta anulada no se puede editar');return;}
+  if(v.payMethod==='bono'||v.bonoId){showToast('Las ventas de bonos se gestionan desde Bonos');return;}
+  _startVentaEdit('venta',v);
+}
+function editApunte(apId){
+  var a=(sd().apuntes||[]).find(function(x){return x&&x.id===apId;});
+  if(a)_startVentaEdit('apunte',a);
+}
+function delApunte(apId){
+  var a=(sd().apuntes||[]).find(function(x){return x&&x.id===apId;});
+  if(!a)return;
+  mdcConfirm('Se eliminará el apunte <strong>'+esc(a.num||'')+'</strong>. No afecta al stock ni a la facturación.','Eliminar apunte','Sí, eliminar',function(){
+    sd().apuntes=(sd().apuntes||[]).filter(function(x){return x&&x.id!==apId;});
+    delete _openVentas['ap_'+apId];
+    save();fbSave();
+    if(currentPage==='contabilidad')renderContabilidad();
+    showToast('Apunte eliminado');
+  });
+}
+/* Guarda el pedido actual como apunte por cheque. */
+function _confirmApunte(){
+  var pf=_checkoutPrefill||{};
+  var now=new Date(),todayStr=now.toISOString().slice(0,10);
+  var date=String(pf.date||'').trim()||todayStr;
+  if(date>todayStr)date=todayStr;
+  var ed=_editingVenta,orig=null;
+  if(ed)orig=_removeOriginalForEdit(ed);
+  if(!Array.isArray(sd().apuntes))sd().apuntes=[];
+  if(!sd().apunteCounter)sd().apunteCounter=1;
+  var keep=!!(orig&&ed.kind==='apunte');
+  var num=keep?orig.rec.num:'CHQ-'+String(sd().apunteCounter).padStart(3,'0');
+  var ap={
+    id:keep?orig.rec.id:uid(),num:num,tipo:'cheque',date:date,
+    time:keep&&orig.rec.time?orig.rec.time:((now.getHours()<10?'0':'')+now.getHours()+':'+(now.getMinutes()<10?'0':'')+now.getMinutes()),
+    clientName:activeClient.name,clientPhone:activeClient.phone||'',clientId:activeClient.id||'',
+    note:String(pf.note||'').trim(),
+    items:cart.map(function(ci){
+      return {productId:ci.productId,productName:ci.productName,cat:ci.cat,qty:ci.qty,
+        sellPrice:ci.sellPrice||0,costPrice:ci.costPrice||0,isService:ci.isService||false,linkedProducts:ci.linkedProducts||[]};
+    })
+  };
+  if(keep){ap.editedAt=now.toISOString();sd().apuntes.splice(Math.min(orig.idx,sd().apuntes.length),0,ap);}
+  else{sd().apuntes.push(ap);sd().apunteCounter++;}
+  _kitVarSelections={};
+  invalidateCliCache();
+  save();fbSave();
+  haptic('confirm');
+  cart=[];activeClient=null;_resetVentaEditState();
+  updateCartBar();closeMod();renderVentasList();
+  if(currentPage==='contabilidad')renderContabilidad();
+  showToast('🧾 Apunte '+num+' guardado · no suma en facturación ni descuenta stock',5000);
+}
+
 function openFinalizeModal(){
   if(!cart.length){showToast('&#128722; A\u00f1ade productos al pedido primero');return;}
   if(!activeClient){showToast('&#128100; Introduce un cliente primero');return;}
@@ -7331,11 +7482,18 @@ function openFinalizeModal(){
 
   // F18 FIX: warn about zero/insufficient stock before finalizing
   var stockWarnings=[];
+  // Al editar una venta, sus unidades originales vuelven al stock al guardar
+  var _origQty={};
+  if(_editingVenta&&_editingVenta.kind==='venta'){
+    var _ov=(sd().ventas||[]).find(function(x){return x&&x.id===_editingVenta.id;});
+    if(_ov)(_ov.items||[]).forEach(function(it){if(!it.isService)_origQty[it.productId]=(_origQty[it.productId]||0)+(it.qty||0);});
+  }
   cart.forEach(function(item){
+    if(_chequeMode)return; // un apunte no toca el stock
     if(item.isService)return;
     var prod=null;for(var i=0;i<data.products.length;i++)if(data.products[i].id===item.productId){prod=data.products[i];break;}
     if(!prod)return;
-    var stockLeft=(prod.stock||0)-item.qty;
+    var stockLeft=(prod.stock||0)+(_origQty[item.productId]||0)-item.qty;
     if(stockLeft<0)stockWarnings.push(esc(item.productName)+' (faltan '+(Math.abs(stockLeft))+' uds.)');
     else if(stockLeft===0)stockWarnings.push(esc(item.productName)+' (se agotará)');
   });
@@ -7353,7 +7511,7 @@ function openFinalizeModal(){
 
   // Header
   h+='<div style="padding:14px 20px 10px;display:flex;align-items:center;justify-content:space-between">';
-  h+='<div style="font-family:Nunito,sans-serif;font-size:20px;font-weight:900;color:var(--text)">&#128722; Pedido</div>';
+  h+='<div style="font-family:Nunito,sans-serif;font-size:20px;font-weight:900;color:var(--text)">'+(_editingVenta?'&#9999;&#65039; Editando '+esc(_editingVenta.num||''):'&#128722; Pedido')+'</div>';
   h+='<button onclick="closeMod()" style="background:var(--surface2);border:none;border-radius:10px;width:32px;height:32px;font-size:18px;cursor:pointer;color:var(--text3);display:flex;align-items:center;justify-content:center">&#215;</button>';
   h+='</div>';
 
@@ -7367,6 +7525,12 @@ function openFinalizeModal(){
 
   // Productos
   h+='<div class="sh-body" style="padding-top:4px">';
+  // Venta por cheque: solo apunte
+  h+='<label style="display:flex;align-items:flex-start;gap:10px;padding:11px 13px;margin:6px 0 12px;border-radius:14px;border:1.5px solid '+(_chequeMode?'var(--gold)':'var(--border2)')+';background:'+(_chequeMode?'var(--gold-light)':'var(--surface2)')+';cursor:pointer">';
+  h+='<input type="checkbox" id="checkoutCheque"'+(_chequeMode?' checked':'')+' onchange="setChequeMode(this.checked)" style="width:20px;height:20px;margin-top:1px;accent-color:var(--gold);flex-shrink:0">';
+  h+='<span><span style="display:block;font-size:13px;font-weight:800;color:var(--text)">&#129534; Venta por cheque (solo apunte)</span>';
+  h+='<span style="display:block;font-size:11.5px;font-weight:600;color:var(--text3);margin-top:2px">Queda anotada con sus productos, pero no descuenta stock ni suma en la facturaci\u00f3n.</span></span>';
+  h+='</label>';
   h+='<span class="sh-lbl">Productos &middot; '+totalQty+' unidades</span>';
 
   for(var i=0;i<cart.length;i++){
@@ -7379,15 +7543,16 @@ function openFinalizeModal(){
     else h+='<div style="width:42px;height:42px;border-radius:10px;background:var(--surface2);display:flex;align-items:center;justify-content:center;font-size:18px;flex-shrink:0">'+(ci.isService?'&#10024;':'&#128722;')+'</div>';
     h+='<div style="flex:1;min-width:0">';
     h+='<div style="font-size:13px;font-weight:800;color:var(--text);overflow:hidden;white-space:nowrap;text-overflow:ellipsis">'+esc(ci.productName)+'</div>';
-    h+='<div style="font-size:11px;color:var(--text3);font-weight:600;margin-top:2px">'+ci.qty+' ud &times; '+fmt(ci.sellPrice);
-    if(lineProfit>0)h+=' &nbsp;<span style="color:var(--green);font-weight:700">+'+fmt(lineProfit)+'</span>';
+    h+='<div style="font-size:11px;color:var(--text3);font-weight:600;margin-top:2px">'+ci.qty+' ud'+(_chequeMode?'':' &times; '+fmt(ci.sellPrice));
+    if(lineProfit>0&&!_chequeMode)h+=' &nbsp;<span style="color:var(--green);font-weight:700">+'+fmt(lineProfit)+'</span>';
     h+='</div></div>';
-    h+='<div style="font-size:14px;font-weight:900;color:var(--text);font-family:Nunito,monospace;flex-shrink:0">'+fmt(lineTotal)+'</div>';
+    if(!_chequeMode)h+='<div style="font-size:14px;font-weight:900;color:var(--text);font-family:Nunito,monospace;flex-shrink:0">'+fmt(lineTotal)+'</div>';
     h+='<button data-delidx="'+i+'" style="width:30px;height:30px;border-radius:9px;border:1.5px solid var(--border2);background:transparent;color:var(--text3);font-size:15px;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0">&#215;</button>';
     h+='</div>';
   }
 
-  // Totales
+  // Totales, descuento y forma de pago (ocultos en un apunte por cheque)
+  h+='<div id="coMoney"'+(_chequeMode?' style="display:none"':'')+'>';
   h+='<div style="margin-top:12px;padding:14px;background:var(--surface2);border-radius:14px;display:flex;justify-content:space-around;text-align:center">';
   h+='<div><div style="font-size:18px;font-weight:900;font-family:Nunito,monospace;color:var(--gold)">'+fmt(totalRev)+'</div><div style="font-size:10px;font-weight:800;color:var(--text3);text-transform:uppercase;letter-spacing:.07em;margin-top:2px">Total venta</div></div>';
   h+='<div style="width:1.5px;background:var(--border)"></div>';
@@ -7425,10 +7590,11 @@ function openFinalizeModal(){
   });
   h+='</div>';
   h+='<input type="hidden" id="checkoutPayMethod" value="Efectivo">';
+  h+='</div>'; // #coMoney
 
   // Fecha de venta — permite registrar ventas pasadas
   var todayVal=new Date().toISOString().slice(0,10);
-  h+='<span class="sh-lbl" style="margin-top:4px">&#128197; Fecha de la venta</span>';
+  h+='<span class="sh-lbl" style="margin-top:4px">&#128197; Fecha '+(_chequeMode?'del apunte':'de la venta')+'</span>';
   h+='<div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">';
   h+='<input id="checkoutDate" class="fld" type="date" value="'+todayVal+'" max="'+todayVal+'" style="flex:1;padding:10px 12px">';
   h+='<button onclick="document.getElementById(\'checkoutDate\').value=\''+todayVal+'\'" style="padding:9px 12px;border-radius:var(--r-sm);border:1.5px solid var(--border2);background:var(--surface2);color:var(--text3);font-size:11px;font-weight:700;font-family:inherit;cursor:pointer;white-space:nowrap">Hoy</button>';
@@ -7451,13 +7617,14 @@ function openFinalizeModal(){
   // Botones
   h+='<div class="sh-actions" style="padding-bottom:8px">';
   h+='<button class="sbtn gho" type="button" onclick="closeMod()">Volver</button>';
-  h+='<button class="sbtn dan" type="button" onclick="clearCart()">Vaciar</button>';
-  h+='<button class="sbtn pri" type="button" onclick="confirmVenta()" style="font-size:15px">&#10003; Confirmar</button>';
+  h+='<button class="sbtn dan" type="button" onclick="clearCart()">'+(_editingVenta?'Cancelar edici\u00f3n':'Vaciar')+'</button>';
+  h+='<button class="sbtn pri" type="button" onclick="confirmVenta()" style="font-size:15px">&#10003; '+(_editingVenta?'Guardar cambios':(_chequeMode?'Guardar apunte':'Confirmar'))+'</button>';
   h+='</div>';
   h+='</div></div></div>';
 
   document.getElementById('modRoot').innerHTML=h;
   trapFocusInModal(document.getElementById('modRoot'));
+  _applyCheckoutPrefill();
 
   // Show warning when date is not today
   setTimeout(function(){
@@ -7500,11 +7667,15 @@ function selectPayMethod(m){
 /* ═══ CHECKOUT ANTIGUO (desactivado, mantenido por compatibilidad) ═══ */
 function openCartCheckout(){openFinalizeModal();}
 
-function clearCart(){cart=[];updateCartBar();closeMod();renderVentasList();}
+function clearCart(){var _wasEd=_editingVenta;cart=[];if(_wasEd)activeClient=null;_resetVentaEditState();updateCartBar();closeMod();renderVentasList();if(_wasEd)showToast('Edici\u00f3n cancelada \u00b7 '+(_wasEd.num||'')+' queda como estaba');}
 
 function confirmVenta(){
   if(!cart.length)return;
   if(!activeClient){showToast('Sin cliente asignado');return;}
+  // Guardar lo escrito en el pedido (nota, fecha, pago) por si la ventana se
+  // cierra antes de terminar (selección de componentes de un kit)
+  _captureCheckoutDraft();
+  if(_chequeMode){_confirmApunte();return;}
 
   // Si algún kit necesita selección de componentes variables → mostrar modal primero
   if(cartNeedsVarSelection()){
@@ -7512,19 +7683,24 @@ function confirmVenta(){
     return;
   }
 
-  var note=(document.getElementById('checkoutNote')||{}).value||'';
-  var payMethod=((document.getElementById('checkoutPayMethod')||{}).value)||'Efectivo';
+  var _pf=_checkoutPrefill||{};
+  var note=_pf.note||'';
+  var payMethod=_pf.pay||'Efectivo';
   // F19 FIX: apply discount
-  var _discPct=parseFloat(((document.getElementById('checkoutDiscount')||{}).value||'0').replace(',','.'))||0;
+  var _discPct=parseFloat(String(_pf.disc||'0').replace(',','.'))||0;
   if(_discPct<0)_discPct=0;if(_discPct>100)_discPct=100;
   var _discMulti=(100-_discPct)/100;
   var now=new Date();
   // Feature 2: use the date from the checkout input if set (allows backdating sales)
-  var checkoutDateVal=((document.getElementById('checkoutDate')||{}).value||'').trim();
+  var checkoutDateVal=String(_pf.date||'').trim();
   var ventaDate=checkoutDateVal||(now.toISOString().slice(0,10));
   // Validate: not future date
   if(ventaDate>now.toISOString().slice(0,10))ventaDate=now.toISOString().slice(0,10);
-  var ventaNum='VTA-'+String(sd().ventaCounter).padStart(3,'0');
+  // Edición: retirar la versión anterior (devuelve su stock) y conservar su número
+  var _ed=_editingVenta,_orig=null;
+  if(_ed)_orig=_removeOriginalForEdit(_ed);
+  var _keepNum=!!(_orig&&_ed.kind==='venta');
+  var ventaNum=_keepNum?_orig.rec.ventaNum:'VTA-'+String(sd().ventaCounter).padStart(3,'0');
 
   var items=cart.map(function(ci){
     return{
@@ -7622,8 +7798,13 @@ function confirmVenta(){
   var _promoName=_promoSel&&_promoSel.selectedIndex>0?(_promoSel.options[_promoSel.selectedIndex].text.split('(')[0].trim()||undefined):undefined;
   var venta={id:uid(),ventaNum:ventaNum,date:ventaDate,time:(new Date().getHours()<10?'0':'')+now.getHours()+':'+(now.getMinutes()<10?'0':'')+now.getMinutes(),clientName:activeClient.name,clientPhone:activeClient.phone,clientId:activeClient.id||'',discount:_discPct>0?_discPct:undefined,promoName:_promoName,note:note.trim(),payMethod:payMethod,items:items,totalRevenue:totalRevenue,totalProfit:totalProfit};
   if(!sd().ventas)sd().ventas=[];
-  sd().ventas.push(venta);
-  sd().ventaCounter++;
+  if(_keepNum){
+    venta.id=_orig.rec.id;venta.time=_orig.rec.time||venta.time;venta.editedAt=new Date().toISOString();
+    sd().ventas.splice(Math.min(_orig.idx,sd().ventas.length),0,venta);
+  }else{
+    sd().ventas.push(venta);
+    sd().ventaCounter++;
+  }
   // Track promo usage
   if(_promoName){
     (sd().promociones||[]).forEach(function(p){
@@ -7635,9 +7816,10 @@ function confirmVenta(){
   save();fbSave();
   haptic('confirm');
   var ventaParaTicket=venta;
-  cart=[];activeClient=null;updateCartBar();closeMod();
+  cart=[];activeClient=null;_resetVentaEditState();updateCartBar();closeMod();
   renderVentasList();
-  showToast('\u2713 '+ventaNum+' \u00b7 '+fmt(totalRevenue));
+  if(currentPage==='contabilidad')renderContabilidad();
+  showToast('\u2713 '+ventaNum+(_keepNum?' actualizada':'')+' \u00b7 '+fmt(totalRevenue));
   setTimeout(function(){showVentaTicket(ventaParaTicket);},300);
 }
 
@@ -7766,6 +7948,7 @@ function showVentaTicket(venta){
   // Actions
   h+='<div class="ticket-actions">';
   h+='<button class="tkt-btn close" onclick="closeMod()">Cerrar</button>';
+  if(!venta.anulada&&venta.payMethod!=='bono')h+='<button class="tkt-btn" onclick="editVenta(\''+venta.id+'\')" style="border:1.5px solid var(--border2);background:var(--surface2);color:var(--text2);font-size:12px">&#9999;&#65039; Editar</button>';
   h+='<button class="tkt-btn" onclick="anularVenta(\''+venta.id+'\')\" style="border:1.5px solid var(--red);background:var(--red-light);color:var(--red);font-size:12px">&#10006; Anular</button>';
   h+='<button class="tkt-btn share" onclick="shareTicketWA(\''+venta.id+'\')" style="background:#25D366;color:#fff;box-shadow:0 4px 14px rgba(37,211,102,.3)">&#128172; WhatsApp</button>';
   h+='<button class="tkt-btn" onclick="printTicket(\''+venta.id+'\')" style="background:var(--surface2);color:var(--text2)">&#128424; PDF</button>';
@@ -7882,6 +8065,7 @@ function renderContabilidad(){
   // F10: cleanup stale _openVentas entries (fix: correct variable name)
   var _validIds={};
   (sd().ventas||[]).forEach(function(v){if(v.id)_validIds[v.id]=1;});
+  (sd().apuntes||[]).forEach(function(a){if(a&&a.id)_validIds['ap_'+a.id]=1;});
   if(_openVentas){Object.keys(_openVentas).forEach(function(k){if(!_validIds[k])delete _openVentas[k];});}
   var allVentas=(sd().ventas||[]).slice().reverse();
   var today=new Date().toISOString().slice(0,10);
@@ -8009,6 +8193,24 @@ function renderContabilidad(){
     if(contabFilter==='mes')return v.date.slice(0,7)===mStr;
     return true;
   });
+  // Apuntes por cheque del mismo periodo (se listan, pero no suman en nada)
+  var apFil=(sd().apuntes||[]).slice().reverse().filter(function(a){
+    if(!a||!a.date||!_safeKey(String(a.id||'')))return false;
+    if(hasActiveFilter){
+      var f=_ventaFilters;
+      if(f.method)return false;
+      if(f.dateFrom&&a.date<f.dateFrom)return false;
+      if(f.dateTo&&a.date>f.dateTo)return false;
+      if(f.q){
+        var txt=((a.clientName||'')+' '+(a.num||'')+' '+(a.items||[]).map(function(i){return i.productName||'';}).join(' ')).toLowerCase();
+        if(txt.indexOf(String(f.q).toLowerCase())<0)return false;
+      }
+    }
+    if(contabFilter==='hoy')return a.date===today;
+    if(contabFilter==='semana')return a.date>=wStr;
+    if(contabFilter==='mes')return a.date.slice(0,7)===mStr;
+    return true;
+  });
   // KPIs
   var totRev=0,totProfit=0;
   fil.forEach(function(v){if(!v.anulada){totRev+=v.totalRevenue||0;totProfit+=v.totalProfit||0;}});
@@ -8017,11 +8219,20 @@ function renderContabilidad(){
   sk+='<div class="vd-kpi vk-blue"><div class="vd-kpi-icon">&#128203;</div><div class="vd-kpi-val">'+fil.length+'</div><div class="vd-kpi-lbl">Ventas</div></div>';
   document.getElementById('contabSummary').innerHTML=sk;
   var lEl=document.getElementById('contabList');
-  if(!fil.length){lEl.innerHTML='<div class="vd-empty">&#128203; Aqu\u00ed aparecer\u00e1n tus ventas confirmadas</div>';return;}
+  if(!fil.length&&!apFil.length){lEl.innerHTML='<div class="vd-empty">&#128203; Aqu\u00ed aparecer\u00e1n tus ventas confirmadas</div>';return;}
 
   // Group by date
   var groups={},gDates=[];
   for(var i=0;i<fil.length;i++){var d=fil[i].date;if(!groups[d]){groups[d]=[];gDates.push(d);}groups[d].push(fil[i]);}
+  var apGroups={};
+  if(apFil.length){
+    apFil.forEach(function(a){
+      if(!apGroups[a.date])apGroups[a.date]=[];
+      apGroups[a.date].push(a);
+      if(!groups[a.date]){groups[a.date]=[];gDates.push(a.date);}
+    });
+    gDates.sort(function(x,y){return x<y?1:(x>y?-1:0);});
+  }
 
   var h='';
   for(var g=0;g<gDates.length;g++){
@@ -8030,7 +8241,11 @@ function renderContabilidad(){
     for(var k=0;k<groups[gd].length;k++){if(!groups[gd][k].anulada){dayRev+=groups[gd][k].totalRevenue||0;dayProfit+=groups[gd][k].totalProfit||0;}}
     h+='<div class="vd-day-header">';
     h+='<div class="vd-day-left"><span class="vd-day-label">'+(gd===today?'&#128197; Hoy':'&#128197; '+fdate(gd))+'</span>';
-    h+='<span class="vd-day-count">'+groups[gd].length+' venta'+(groups[gd].length>1?'s':'')+'</span></div>';
+    var _nV=groups[gd].length,_nA=(apGroups[gd]||[]).length;
+    var _cnt=[];
+    if(_nV||!_nA)_cnt.push(_nV+' venta'+(_nV!==1?'s':''));
+    if(_nA)_cnt.push(_nA+' apunte'+(_nA!==1?'s':''));
+    h+='<span class="vd-day-count">'+_cnt.join(' \u00b7 ')+'</span></div>';
     h+='<div class="vd-day-right"><span class="vd-day-rev">'+fmt(dayRev)+'</span><span class="vd-day-profit">+'+fmt(dayProfit)+'</span></div>';
     h+='</div>';
     for(var k=0;k<groups[gd].length;k++){
@@ -8065,15 +8280,56 @@ function renderContabilidad(){
         }
         if(v.note)h+='<div style="padding:8px 14px 4px;font-size:11px;color:var(--text3);font-style:italic">&#128221; '+esc(v.note)+'</div>';
         h+='<div class="vd-detail-actions">';
+        if(!v.anulada&&v.payMethod!=='bono')h+='<button class="sbtn gho" type="button" style="font-size:11px;padding:6px 12px" data-editid="'+v.id+'">&#9999;&#65039; Editar</button>';
         h+='<button class="sbtn teal" type="button" style="font-size:11px;padding:6px 12px" data-ticketid="'+v.id+'">&#129534; Ticket</button>';
         h+='<button class="vd-del-btn" data-ventaid="'+v.id+'" style="font-size:11px;padding:6px 12px">&#128465; Eliminar venta</button>';
         h+='</div>';
         h+='</div>';
       }
     }
+    // Apuntes por cheque de ese día
+    (apGroups[gd]||[]).forEach(function(a){
+      var apk='ap_'+a.id,aOpen=!!_openVentas[apk],aItems=a.items||[];
+      var aUds=aItems.reduce(function(n,it){return n+(Number(it.qty)||0);},0);
+      h+='<div class="vd-venta-row'+(aOpen?' open':'')+'" onclick="toggleVentaDetail(\''+apk+'\')" style="cursor:pointer;border-left:3px solid var(--gold)">';
+      h+='<div class="vd-vr-left">';
+      h+='<span class="vd-venta-num">'+esc(a.num||'')+' <span style="background:var(--gold-light);color:var(--gold);font-size:9.5px;font-weight:800;padding:1px 7px;border-radius:20px">Cheque \u00b7 apunte</span></span>';
+      h+='<span class="vd-vr-meta">'+esc(a.time||'')+(a.clientName?' \u00b7 '+esc(a.clientName):'')+'</span>';
+      h+='<span class="vd-vr-items">'+aUds+' unidad'+(aUds!==1?'es':'')+' \u00b7 no suma</span>';
+      h+='</div>';
+      h+='<div class="vd-vr-right"><span class="vd-venta-total" style="color:var(--text3)">\u2014</span><span class="vd-vr-chevron">'+(aOpen?'&#9650;':'&#9660;')+'</span></div>';
+      h+='</div>';
+      if(aOpen){
+        h+='<div class="vd-venta-detail">';
+        aItems.forEach(function(it){
+          var imgA=getImg(it.productName);
+          h+='<div class="vd-venta-item">';
+          if(imgA)h+='<img loading="lazy" decoding="async" class="vd-vi-img" src="'+imgA+'" alt="">';
+          else h+='<div class="vd-vi-ph">'+(it.isService?'&#10024;':'&#128722;')+'</div>';
+          h+='<div class="vd-vi-info"><div class="vd-vi-name">'+esc(it.productName||'')+'</div>';
+          h+='<div class="vd-vi-meta">'+(Number(it.qty)||0)+' ud</div></div>';
+          h+='</div>';
+        });
+        if(a.note)h+='<div style="padding:8px 14px 4px;font-size:11px;color:var(--text3);font-style:italic">&#128221; '+esc(a.note)+'</div>';
+        h+='<div class="vd-detail-actions">';
+        h+='<button class="sbtn gho" type="button" style="font-size:11px;padding:6px 12px" data-apedit="'+a.id+'">&#9999;&#65039; Editar</button>';
+        h+='<button class="vd-del-btn" data-apdel="'+a.id+'" style="font-size:11px;padding:6px 12px">&#128465; Eliminar apunte</button>';
+        h+='</div></div>';
+      }
+    });
     h+='<div style="height:10px"></div>';
   }
   lEl.innerHTML=h;
+
+  lEl.querySelectorAll('[data-editid]').forEach(function(btn){
+    btn.addEventListener('click',function(e){e.stopPropagation();editVenta(btn.getAttribute('data-editid'));});
+  });
+  lEl.querySelectorAll('[data-apedit]').forEach(function(btn){
+    btn.addEventListener('click',function(e){e.stopPropagation();editApunte(btn.getAttribute('data-apedit'));});
+  });
+  lEl.querySelectorAll('[data-apdel]').forEach(function(btn){
+    btn.addEventListener('click',function(e){e.stopPropagation();delApunte(btn.getAttribute('data-apdel'));});
+  });
 
   lEl.querySelectorAll('.vd-del-btn[data-ventaid]').forEach(function(btn){
     btn.addEventListener('click',function(e){e.stopPropagation();
